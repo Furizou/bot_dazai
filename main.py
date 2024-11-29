@@ -3,6 +3,8 @@ import os
 from dotenv import load_dotenv
 from discord import Intents, Client, Message
 from responses import get_response
+from apps.ffmpeg_setup import voice_client_dict, ytdl, yt_dl_options, ffmpeg_options
+import yt_dlp
 
 # STEP 0: load env
 load_dotenv()
@@ -12,6 +14,9 @@ TOKEN: Final[str] = os.getenv('DISCORD_TOKEN')
 intents: Intents = Intents.default()
 intents.message_content = True #NOQA
 client: Client = Client(intents=intents)
+
+# MUSICS
+ytdl = yt_dlp.YoutubeDL(yt_dl_options)
 
 # STEP 2: msg functionality
 async def send_message(message: Message, user_message: str) -> None:
@@ -23,7 +28,11 @@ async def send_message(message: Message, user_message: str) -> None:
         user_message = user_message[1:]
         
     try:
-        response: str = get_response(user_message)
+        response: str = await get_response(user_message, message)
+        
+        if not response:
+            response = "Sorry, I couldn't process that request."
+        
         if is_private:
             await message.author.send(response)
         else:
@@ -48,7 +57,7 @@ async def on_message(message: Message) -> None:
         return
     
     username: str = str(message.author)
-    user_message: str = message.content
+    user_message: str = message.content[1:]
     channel: str = str(message.channel)
     
     print(f'[{channel}] {username}: "{user_message}"')
