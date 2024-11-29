@@ -53,6 +53,10 @@ async def on_message(message: Message) -> None:
     if message.author == client.user:
         return
     
+    # Check if the message is empty
+    if not message.content:
+        return
+    
     if message.content[0] != '>':
         return
     
