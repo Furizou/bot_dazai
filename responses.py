@@ -1,5 +1,6 @@
 import asyncio
 from random import choice, randint
+import time
 from discord import Message
 import discord
 # from main import voice_client_dict, ytdl, ffmpeg_options
@@ -13,7 +14,9 @@ async def get_response(user_input: str, message: Message) -> str:
         return 'apaan'
     elif lowered.startswith('play'):
         result = await play_music(message)
-        return f"Now Playing: {result}"
+        # return f"Now Playing: {result}"
+        
+        return result
     
     elif lowered.startswith('skip'):
         result = await skip_music(message)
@@ -37,23 +40,26 @@ async def get_response(user_input: str, message: Message) -> str:
     
     elif lowered.startswith('stop'):
         result = await stop_music(message)
-        return f"dadah tod"
+        return f"dadah"
         
     elif 'hello' in lowered:
         return 'HAI COK'
     elif 'judol' in lowered:
         return f'Selamat kamu dapat nomor: {randint(1,6)}'
     else:
-        return choice(['Ngomong apa sih nyet',
-                       'Sorry gapaham',
-                       'Mana kutau kau mau apa',])
+        # return choice(['Ngomong apa sih nyet',
+        #                'Sorry gapaham',
+        #                'Mana kutau kau mau apa',])
+        return choice(['Ngomong apa sih',
+                'Sorry gapaham',
+                'Mana kutau kau mau apa',])
 
     # raise NotImplementedError('Code is missing...')
     
 async def play_music(message: Message):
     voice_channel = message.author.voice.channel  # Get the user's voice channel
     voice_channel_id = voice_channel.id
-    
+
     # Ensure the music queue is initialized for the voice channel
     if voice_channel_id not in music_queue:
         music_queue[voice_channel_id] = []
@@ -66,30 +72,60 @@ async def play_music(message: Message):
 
         url = message.content.split()[1]
         loop = asyncio.get_event_loop()
-        
+
         # Use yt-dlp to extract song metadata
         data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
-        
+
+        if ("tiktok.com" in url) and (not data.get("url")):
+            return "This TikTok video is not compatible for playback."
+
+        # Handle playlists by taking the first entry
+        if 'entries' in data:
+            data = data['entries'][0]
+
         song_url = data['url']
-        song_title = data.get('title', 'Unknown Title')  # Safeguard against missing title
-        
+        song_title = data.get('title', 'Unknown Title')
+        song_duration = data.get('duration', 0)
+        thumbnail = data.get('thumbnail', None)
+        webpage_url = data.get('webpage_url')  # The original video URL
+
         # Add to the queue for the voice channel
-        music_queue[voice_channel_id].append({'title': song_title, 'url': song_url})
+        music_queue[voice_channel_id].append({
+            'title': song_title,
+            'url': song_url,
+            'webpage_url': webpage_url,
+            'duration': song_duration,
+            'thumbnail': thumbnail,
+            'requested_by': message.author
+        })
         print(f"Added to queue in {voice_channel.name}: {song_title}")
         
+        # Send an embed message with the current song info
+        embed = discord.Embed(
+            title=song_title,
+            url=song_url,  # Use webpage_url for the embed
+            description=f"Queue Length: {len(music_queue[voice_channel_id])}",
+            color=0x8A3215,
+        )
+        
+        embed.set_author(name="Added to Queue 😍")
+        if thumbnail:
+            embed.set_thumbnail(url=thumbnail)
+        await message.channel.send(embed=embed)
+
         # Cancel any existing timeout timer
         await cancel_timeout_timer(voice_channel)
-        
+
         # If nothing is playing, start playing the next song in the queue
         if not voice_client_dict[voice_channel_id].is_playing():
-            await play_next_in_queue(voice_channel)
+            await play_next_in_queue(voice_channel, message.channel)
 
         return song_title
     except Exception as e:
         print(f"Error in play_music: {e}")
         return "Failed to play the requested song."
-        
-async def play_next_in_queue(voice_channel):
+
+async def play_next_in_queue(voice_channel, text_channel):
     voice_channel_id = voice_channel.id
 
     # Check if the queue is empty
@@ -100,35 +136,82 @@ async def play_next_in_queue(voice_channel):
             print(f"Queue is empty in {voice_channel.name}. Timeout timer started.")
         return  # Exit if queue is empty
 
-    # Get the current song (without popping it)
+    # Get the current song
     current_song = music_queue[voice_channel_id][0]
 
     try:
-        # Stop any existing playback (ensure ffmpeg cleanup)
+        # Stop any existing playback
         if voice_client_dict[voice_channel_id].is_playing():
             voice_client_dict[voice_channel_id].stop()
 
+        # Use the direct audio URL
+        source = current_song['url']
+
+        # # FFmpeg options
+        # ffmpeg_options = {
+        #     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+        #     'options': '-vn'
+        # }
+
         # Play the current song
-        player = discord.FFmpegPCMAudio(current_song['url'], **ffmpeg_options)
+        player = discord.FFmpegPCMAudio(source, **ffmpeg_options)
+        voice_client = voice_client_dict[voice_channel_id]
 
-        # Use the main event loop for the after callback
-        loop = asyncio.get_event_loop()
+        # Get the main event loop
+        loop = asyncio.get_running_loop()
 
+        # Define the after callback
         def after_playing(error):
+            """Triggered when the current song finishes."""
             if error:
                 print(f"Error during playback in {voice_channel.name}: {error}")
+            else:
+                print(f"Finished playing: {current_song['title']}")
 
-            # Remove the current song from the queue after it finishes
-            if voice_channel_id in music_queue and len(music_queue[voice_channel_id]) > 0:
-                music_queue[voice_channel_id].pop(0)
+            # Schedule the coroutine on the main event loop
+            asyncio.run_coroutine_threadsafe(
+                handle_next_song(voice_channel, text_channel),
+                loop
+            )
 
-            # Trigger the next song
-            asyncio.run_coroutine_threadsafe(play_next_in_queue(voice_channel), loop)
+        voice_client.play(player, after=after_playing)
 
-        voice_client_dict[voice_channel_id].play(player, after=after_playing)
+        # Send an embed message with the current song info
+        embed = discord.Embed(
+            title=current_song["title"],
+            url=current_song["webpage_url"],  # Use webpage_url for the embed
+            color=0x8A3215
+        )
+        embed.set_author(name="🎵 Now Playing")
+        if thumbnail := current_song['thumbnail']:
+            embed.set_thumbnail(url=thumbnail)
+            
+        embed.description = f"•`{format_duration(current_song['duration'])}`\n• <@{current_song['requested_by'].id}>"
+        embed.set_footer(
+            text=f"Song By: {current_song.get('uploader', 'Unknown')} • Today at {discord.utils.utcnow().strftime('%H:%M')}."
+        )
+        await text_channel.send(embed=embed)
+
         print(f"Now playing in {voice_channel.name}: {current_song['title']}")
+
     except Exception as e:
         print(f"Error playing next song in {voice_channel.name}: {e}")
+
+async def handle_next_song(voice_channel, text_channel):
+    """Handle the transition to the next song or start the timeout timer."""
+    voice_channel_id = voice_channel.id
+
+    # Remove the current song from the queue
+    if len(music_queue[voice_channel_id]) > 0:
+        music_queue[voice_channel_id].pop(0)
+
+    # If the queue has more songs, play the next one
+    if len(music_queue[voice_channel_id]) > 0:
+        await play_next_in_queue(voice_channel, text_channel)
+    else:
+        # Start the timeout timer if the queue is empty
+        print(f"Queue is empty in {voice_channel.name}. Starting timeout timer.")
+        await start_timeout_timer(voice_channel)
         
 async def pause_music(message: Message):
     try:
@@ -156,7 +239,7 @@ async def skip_music(message: Message):
 
         # Trigger the next song if the queue is not empty
         if len(music_queue[voice_channel_id]) > 0:
-            await play_next_in_queue(voice_channel)
+            await play_next_in_queue(voice_channel, message.channel)
         else:
             print(f"Queue is now empty in {voice_channel.name}")
             if voice_channel_id not in timeout_timers:
@@ -171,14 +254,71 @@ async def show_queue(message: Message):
     voice_channel = message.author.voice.channel
     voice_channel_id = voice_channel.id
 
+    # Check if the queue is empty
     if voice_channel_id not in music_queue or len(music_queue[voice_channel_id]) == 0:
-        return f"The queue is empty in {voice_channel.name}."
-    
-    # Display the current song and the rest of the queue
-    queue_list = "\n".join(
-        [f"{idx+1}. {song['title']}" for idx, song in enumerate(music_queue[voice_channel_id])]
+        embed = discord.Embed(
+            description=f"The queue is empty in {voice_channel.name}.",
+            color=0x8A3215
+        )
+        await message.channel.send(embed=embed)
+        return
+
+    # Get the current song
+    current_song = music_queue[voice_channel_id][0]
+    queue_length = len(music_queue[voice_channel_id])
+
+    # Generate queue list using 'webpage_url' for hyperlinks
+    queue_lines = [
+        f"({idx+1}). **[{song['title']}]({song['webpage_url']})** • `{format_duration(song['duration'])}` • <@{song['requested_by'].id}>"
+        for idx, song in enumerate(music_queue[voice_channel_id][1:])
+    ]
+
+    # Split queue list into chunks of 1024 characters
+    chunks = []
+    current_chunk = ""
+    for line in queue_lines:
+        if len(current_chunk) + len(line) + 1 > 1024:
+            chunks.append(current_chunk)
+            current_chunk = line
+        else:
+            current_chunk += ("\n" + line) if current_chunk else line
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    # Create the embed
+    embed = discord.Embed(color=0x8A3215)
+    embed.set_author(
+        name=f"Music Queue for {message.guild.name}",
+        icon_url=message.guild.icon.url if message.guild.icon else None
     )
-    return f"Current queue in {voice_channel.name}:\n{queue_list}\n\nCurrently playing: {music_queue[voice_channel_id][0]['title']}"
+    embed.add_field(
+        name="**Now Playing:**",
+        value=f"**[{current_song['title']}]({current_song['webpage_url']})** • `{format_duration(current_song['duration'])}` • <@{current_song['requested_by'].id}>",
+        inline=False
+    )
+
+    # Add queue chunks as fields
+    if queue_length > 1:
+        for i, chunk in enumerate(chunks, start=1):
+            embed.add_field(
+                name=f"**Queue list (Part {i}):**",
+                value=chunk,
+                inline=False
+            )
+    else:
+        embed.add_field(
+            name="**Queue list:**",
+            value="No more songs in the queue.",
+            inline=False
+        )
+
+    # Footer with queue length
+    embed.set_footer(
+        text=f"Queue Length: {queue_length}"
+    )
+
+    await message.channel.send(embed=embed)
+
         
 async def stop_music(message: Message):
     voice_channel = message.author.voice.channel
@@ -212,12 +352,12 @@ async def start_timeout_timer(voice_channel):
 
     # Cancel any existing timer for this voice channel
     if voice_channel_id in timeout_timers:
-        timeout_timers[voice_channel_id].cancel()
+        print(f"Timeout timer already running for {voice_channel.name}.")
+        return  # Avoid redundant timers
 
     # Start a new timer
     async def timeout_task():
         await asyncio.sleep(600)  # Timeout period: 10 minutes
-        # Leave the channel if still connected and idle
         if voice_channel_id in voice_client_dict and voice_client_dict[voice_channel_id] is not None:
             await voice_client_dict[voice_channel_id].disconnect()
             del voice_client_dict[voice_channel_id]
@@ -231,3 +371,8 @@ async def cancel_timeout_timer(voice_channel):
         timeout_timers[voice_channel_id].cancel()
         del timeout_timers[voice_channel_id]
         print(f"Timeout canceled for {voice_channel.name} due to activity.")
+        
+def format_duration(seconds: int) -> str:
+    """Convert seconds to MM:SS format."""
+    minutes, seconds = divmod(seconds, 60)
+    return f"{minutes}:{seconds:02d}"

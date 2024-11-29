@@ -30,8 +30,8 @@ async def send_message(message: Message, user_message: str) -> None:
     try:
         response: str = await get_response(user_message, message)
         
-        if not response:
-            response = "Sorry, I couldn't process that request."
+        # if response == None:
+        #     response = "Sorry, I couldn't process that request."
         
         if is_private:
             await message.author.send(response)
