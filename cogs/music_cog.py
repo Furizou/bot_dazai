@@ -97,6 +97,14 @@ class MusicCog(commands.Cog):
                 # It's a direct URL
                 selected_entry = {'url': url_or_query}
 
+            # -------------------- adding to queue loading ----------------------
+            loading_embed = discord.Embed(
+                title="Processing your request...",
+                description="Please wait while we retrieve the song information. 🎵",
+                color=0x8A3215,
+            )
+            loading_message = await ctx.send(embed=loading_embed)
+            
             # Extract song information using yt_dlp
             selected_url = selected_entry['url']
             loop = asyncio.get_event_loop()
@@ -122,8 +130,8 @@ class MusicCog(commands.Cog):
             embed.set_author(name="Added to Queue 🎶")
             if thumbnail := song_info['thumbnail']:
                 embed.set_thumbnail(url=thumbnail)
-            await ctx.send(embed=embed)
-
+            await loading_message.edit(embed=embed)
+            
             # Cancel any existing timeout timer
             await self.cancel_timeout_timer(voice_channel)
 
@@ -165,6 +173,14 @@ class MusicCog(commands.Cog):
                 # It's a direct URL
                 selected_entry = {'url': url_or_query}
 
+            # -------------------- adding to queue loading ----------------------
+            loading_embed = discord.Embed(
+                title="Processing your request...",
+                description="Please wait while we retrieve the song information. 🎵",
+                color=0x8A3215,
+            )
+            loading_message = await ctx.send(embed=loading_embed)
+            
             # Extract song information using yt_dlp
             selected_url = selected_entry['url']
             loop = asyncio.get_event_loop()
@@ -192,7 +208,7 @@ class MusicCog(commands.Cog):
             embed.set_author(name="Quickplaying 🎵")
             if thumbnail := song_info['thumbnail']:
                 embed.set_thumbnail(url=thumbnail)
-            await ctx.send(embed=embed)
+            await loading_message.edit(embed=embed)
 
             # Cancel any existing timeout timer
             await self.cancel_timeout_timer(voice_channel)
