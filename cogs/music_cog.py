@@ -3,6 +3,7 @@ import discord
 from discord.ext import commands
 import asyncio
 import yt_dlp
+from yt_dlp.utils import DownloadError
 from apps.ffmpeg_setup import voice_client_dict, ytdl, ffmpeg_options, music_queue, timeout_timers
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -16,7 +17,7 @@ class MusicCog(commands.Cog):
         
         # Load the YouTube API key here
         self.YOUTUBE_API_KEY: Final[str] = os.getenv('YOUTUBE_API_KEY')
-        print(f"YOUTUBE_API_KEY: {self.YOUTUBE_API_KEY}")  # Temporary for debugging
+        # print(f"YOUTUBE_API_KEY: {self.YOUTUBE_API_KEY}")  # Temporary for debugging
 
         if not self.YOUTUBE_API_KEY:
             print("YOUTUBE_API_KEY is not set. Please set the environment variable.")
@@ -78,7 +79,7 @@ class MusicCog(commands.Cog):
                     voice_client = voice_client_dict[voice_channel_id]
                 except Exception as e:
                     print(f"Error connecting to voice channel: {e}")
-                    await ctx.send("Failed to connect to the voice channel.")
+                    await ctx.reply("Failed to connect to the voice channel.", mention_author=False)
                     return
             else:
                 voice_client = voice_client_dict[voice_channel_id]
@@ -89,7 +90,7 @@ class MusicCog(commands.Cog):
                 entries = await self.search_youtube(url_or_query)
 
                 if not entries:
-                    await ctx.send("No results found.")
+                    await ctx.reply("No results found.", mention_author=False)
                     return
                 
                 selected_entry = await self.select_song(ctx=ctx, entries=entries, url_or_query=url_or_query)
@@ -103,17 +104,19 @@ class MusicCog(commands.Cog):
                 description="Please wait while we retrieve the song information. 🎵",
                 color=0x8A3215,
             )
-            loading_message = await ctx.send(embed=loading_embed)
+            loading_message = await ctx.reply(embed=loading_embed, mention_author=False)
             
-            # Extract song information using yt_dlp
             selected_url = selected_entry['url']
-            loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(selected_url, download=False))
-
-            if 'entries' in data:
-                data = data['entries'][0]
-
-            song_info = await self.extract_song_info(selected_url)
+            try:
+                song_info = await self.extract_song_info(selected_url)
+            except ValueError as e:
+                await loading_message.edit(embed=discord.Embed(
+                    title="Error",
+                    description=str(e),
+                    color=0xFF0000
+                ))
+                return
+            # song_info = await self.extract_song_info(selected_url)
             song_info['requested_by'] = ctx.author
             
             # Add to the queue for the voice channel
@@ -141,7 +144,7 @@ class MusicCog(commands.Cog):
 
         except Exception as e:
             print(f"Error in play_music: {e}")
-            await ctx.send("Failed to play the requested song.")
+            await ctx.reply("Failed to play the requested song.", mention_author=False)
 
     async def _quickplay_music(self, ctx, url_or_query: str):
         voice_channel = ctx.author.voice.channel
@@ -165,7 +168,7 @@ class MusicCog(commands.Cog):
                 entries = await self.search_youtube(url_or_query)
 
                 if not entries:
-                    await ctx.send("No results found.")
+                    await ctx.reply("No results found.", mention_author=False)
                     return
                 
                 selected_entry = await self.select_song(ctx=ctx, entries=entries, url_or_query=url_or_query)
@@ -179,18 +182,19 @@ class MusicCog(commands.Cog):
                 description="Please wait while we retrieve the song information. 🎵",
                 color=0x8A3215,
             )
-            loading_message = await ctx.send(embed=loading_embed)
+            loading_message = await ctx.reply(embed=loading_embed, mention_author=False)
             
-            # Extract song information using yt_dlp
             selected_url = selected_entry['url']
-            loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(selected_url, download=False))
-
-            if 'entries' in data:
-                data = data['entries'][0]
-
-            # Extract song information
-            song_info = await self.extract_song_info(selected_url)
+            try:
+                song_info = await self.extract_song_info(selected_url)
+            except ValueError as e:
+                await loading_message.edit(embed=discord.Embed(
+                    title="Error",
+                    description=str(e),
+                    color=0xFF0000
+                ))
+                return
+            # song_info = await self.extract_song_info(selected_url)
             song_info['requested_by'] = ctx.author
 
             # Insert the quickplay song after the current song in the queue
@@ -218,7 +222,7 @@ class MusicCog(commands.Cog):
 
         except Exception as e:
             print(f"Error in quickplay_music: {e}")
-            await ctx.send("Failed to quickplay the requested song.")
+            await ctx.reply("Failed to quickplay the requested song.", mention_author=False)
 
     async def _skip_music(self, ctx):
         voice_channel = ctx.author.voice.channel
@@ -231,11 +235,11 @@ class MusicCog(commands.Cog):
             # Do not remove the current song or call play_next_in_queue here
             # The after_playing callback will handle this
 
-            await ctx.send(f"Skipped to the next song in {voice_channel.name}.")
+            await ctx.reply(f"Skipped to the next song in {voice_channel.name}.", mention_author=False)
 
         except Exception as e:
             print(f"Error in skip_music for {voice_channel.name}: {e}")
-            await ctx.send("Unable to skip the song.")
+            await ctx.reply("Unable to skip the song.", mention_author=False)
 
     async def _show_queue(self, ctx):
         voice_channel = ctx.author.voice.channel
@@ -247,7 +251,7 @@ class MusicCog(commands.Cog):
                 description=f"The queue is empty in {voice_channel.name}.",
                 color=0x8A3215
             )
-            await ctx.send(embed=embed)
+            await ctx.reply(embed=embed, mention_author=False)
             return
 
         # Get the current song
@@ -304,25 +308,25 @@ class MusicCog(commands.Cog):
             text=f"Queue Length: {queue_length}"
         )
 
-        await ctx.send(embed=embed)
+        await ctx.reply(embed=embed, mention_author=False)
 
     async def _pause_music(self, ctx):
         voice_channel_id = ctx.author.voice.channel.id
         try:
             voice_client_dict[voice_channel_id].pause()
-            await ctx.send("Music paused.")
+            await ctx.reply("Music paused.", mention_author=False)
         except Exception as e:
             print(f"Error in pause_music: {e}")
-            await ctx.send("Unable to pause the music.")
+            await ctx.reply("Unable to pause the music.", mention_author=False)
 
     async def _resume_music(self, ctx):
         voice_channel_id = ctx.author.voice.channel.id
         try:
             voice_client_dict[voice_channel_id].resume()
-            await ctx.send("Music resumed.")
+            await ctx.reply("Music resumed.", mention_author=False)
         except Exception as e:
             print(f"Error in resume_music: {e}")
-            await ctx.send("Unable to resume the music.")
+            await ctx.reply("Unable to resume the music.", mention_author=False)
 
     async def _stop_music(self, ctx):
         voice_channel = ctx.author.voice.channel
@@ -332,10 +336,10 @@ class MusicCog(commands.Cog):
             if voice_channel_id in voice_client_dict and voice_client_dict[voice_channel_id].is_connected():
                 await voice_client_dict[voice_channel_id].disconnect()
                 del voice_client_dict[voice_channel_id]
-            await ctx.send(f"Playback stopped and disconnected from {voice_channel.name}.")
+            await ctx.reply(f"Playback stopped and disconnected from {voice_channel.name}.", mention_author=False)
         except Exception as e:
             print(f"Error in stop_music for {voice_channel.name}: {e}")
-            await ctx.send(f"Unable to stop playback in {voice_channel.name}.")
+            await ctx.reply(f"Unable to stop playback in {voice_channel.name}.", mention_author=False)
 
     async def _prune_queue(self, ctx):
         voice_channel = ctx.author.voice.channel
@@ -344,12 +348,12 @@ class MusicCog(commands.Cog):
             if voice_channel_id in music_queue:
                 # Clear the queue
                 music_queue[voice_channel_id].clear()
-                await ctx.send(f"The queue for {voice_channel.name} has been cleared.")
+                await ctx.reply(f"The queue for {voice_channel.name} has been cleared.", mention_author=False)
             else:
-                await ctx.send(f"No queue exists for {voice_channel.name}.")
+                await ctx.reply(f"No queue exists for {voice_channel.name}.", mention_author=False)
         except Exception as e:
             print(f"Error in prune_queue for {voice_channel.name}: {e}")
-            await ctx.send(f"Unable to clear the queue for {voice_channel.name}.")
+            await ctx.reply(f"Unable to clear the queue for {voice_channel.name}.", mention_author=False)
 
     async def play_next_in_queue(self, voice_channel, text_channel):
         voice_channel_id = voice_channel.id
@@ -404,7 +408,7 @@ class MusicCog(commands.Cog):
 
             embed.description = f"•`{self.format_duration(current_song['duration'])}`\n• <@{current_song['requested_by'].id}>"
             embed.set_footer(
-                text=f"Requested by: {current_song['requested_by'].display_name}"
+                text=f"Queue Length: {len(music_queue[voice_channel_id])}"
             )
             await text_channel.send(embed=embed)
 
@@ -467,7 +471,8 @@ class MusicCog(commands.Cog):
                 q=query,
                 part='id,snippet',
                 maxResults=max_results,
-                type='video'
+                type='video',
+                videoEmbeddable='true',  # Filters out non-embeddable videos
             )
             response = request.execute()
             entries = []
@@ -526,7 +531,7 @@ class MusicCog(commands.Cog):
         embed.set_footer(
             text=f"Please select the desired song by typing a number between 1 and {len(entries)}."
         )
-        await ctx.send(embed=embed)
+        await ctx.reply(embed=embed, mention_author=False)
 
         # Wait for the user's response
         def check(m):
@@ -536,24 +541,36 @@ class MusicCog(commands.Cog):
             # Wait for the user's response
             reply = await self.bot.wait_for('message', check=check, timeout=30)
             if not reply.content.isdigit():
-                await ctx.send("Invalid input. The command has been canceled.")
+                await ctx.reply("Invalid input. The command has been canceled.", mention_author=False)
                 return
 
             index = int(reply.content) - 1
             if 0 <= index < len(entries):
                 selected_entry = entries[index]
             else:
-                await ctx.send("Invalid selection. The command has been canceled.")
+                await ctx.reply("Invalid selection. The command has been canceled.", mention_author=False)
                 return
         except asyncio.TimeoutError:
-            await ctx.send("No selection made in time. The command has been canceled.")
+            await ctx.reply("No selection made in time. The command has been canceled.", mention_author=False)
             return
         
         return selected_entry
         
     async def extract_song_info(self, url):
         loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
+        try:
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
+        except DownloadError as e:
+            error_message = str(e)
+            if 'Sign in to confirm your age' in error_message:
+                print("Age-restricted content detected.")
+                raise ValueError("This video is age-restricted and cannot be played.")
+            else:
+                print(f"Error extracting song info: {e}")
+                raise ValueError("An error occurred while extracting song information.")
+        except Exception as e:
+            print(f"Error extracting song info: {e}")
+            raise ValueError("An error occurred while extracting song information.")
 
         if 'entries' in data:
             data = data['entries'][0]

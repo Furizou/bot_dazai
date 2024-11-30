@@ -17,7 +17,7 @@ TOKEN: Final[str] = os.getenv('DISCORD_TOKEN')
 # Bot setup
 intents = Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='<', intents=intents)
+bot = commands.Bot(command_prefix='>', intents=intents)
 
 # Remove default help command if you plan to add a custom one
 bot.remove_command('help')
