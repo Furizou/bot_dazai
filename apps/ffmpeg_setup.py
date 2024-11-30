@@ -20,7 +20,12 @@ ytdl = yt_dlp.YoutubeDL(yt_dl_options)
 voice_client_dict = {}
 ffmpeg_options = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn'
+    'options': '-vn -af loudnorm=I=-16:TP=-1.5:LRA=11'
+    
+    # ---------------------------- Explanation --------------------------
+    # I=-16: Integrated loudness target in LUFS (Loudness Units Full Scale). -16 LUFS is standard for online content.
+    # TP=-1.5: True peak target in dB. This ensures no clipping.
+    # LRA=11: Loudness range target, keeping the audio dynamic but within acceptable levels
 }   
 
 music_queue = {}  # Dictionary to store queues for each guild
