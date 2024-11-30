@@ -91,40 +91,8 @@ class MusicCog(commands.Cog):
                 if not entries:
                     await ctx.send("No results found.")
                     return
-
-                # Generate the search results list
-                search_result = [
-                    f"({idx+1}). **[{entry['title']}]({entry['url']})** • `{self.format_duration(entry['duration'])}`"
-                    for idx, entry in enumerate(entries)
-                ]
-
-                # Create and send the embed with search results
-                embed = discord.Embed(color=0x8A3215)
-                embed.add_field(
-                    name=f"**Search Results for '{url_or_query}':**",
-                    value='\n'.join(search_result),
-                    inline=False
-                )
-                embed.set_footer(
-                    text=f"Please select the desired song by typing a number between 1 and {len(entries)}."
-                )
-                await ctx.send(embed=embed)
-
-                # Wait for the user's response
-                def check(m):
-                    return m.author == ctx.author and m.channel == ctx.channel and m.content.isdigit()
-
-                try:
-                    reply = await self.bot.wait_for('message', check=check, timeout=30)
-                    index = int(reply.content) - 1
-                    if 0 <= index < len(entries):
-                        selected_entry = entries[index]
-                    else:
-                        await ctx.send("Invalid selection.")
-                        return
-                except asyncio.TimeoutError:
-                    await ctx.send("No selection made in time.")
-                    return
+                
+                selected_entry = await self.select_song(ctx=ctx, entries=entries, url_or_query=url_or_query)
             else:
                 # It's a direct URL
                 selected_entry = {'url': url_or_query}
@@ -191,40 +159,8 @@ class MusicCog(commands.Cog):
                 if not entries:
                     await ctx.send("No results found.")
                     return
-
-                # Generate the search results list
-                search_result = [
-                    f"({idx+1}). **[{entry['title']}]({entry['url']})** • `{self.format_duration(entry['duration'])}`"
-                    for idx, entry in enumerate(entries)
-                ]
-
-                # Create and send the embed with search results
-                embed = discord.Embed(color=0x8A3215)
-                embed.add_field(
-                    name=f"**Search Results for '{url_or_query}':**",
-                    value='\n'.join(search_result),
-                    inline=False
-                )
-                embed.set_footer(
-                    text=f"Please select the desired song by typing a number between 1 and {len(entries)}."
-                )
-                await ctx.send(embed=embed)
-
-                # Wait for the user's response
-                def check(m):
-                    return m.author == ctx.author and m.channel == ctx.channel and m.content.isdigit()
-
-                try:
-                    reply = await self.bot.wait_for('message', check=check, timeout=30)
-                    index = int(reply.content) - 1
-                    if 0 <= index < len(entries):
-                        selected_entry = entries[index]
-                    else:
-                        await ctx.send("Invalid selection.")
-                        return
-                except asyncio.TimeoutError:
-                    await ctx.send("No selection made in time.")
-                    return
+                
+                selected_entry = await self.select_song(ctx=ctx, entries=entries, url_or_query=url_or_query)
             else:
                 # It's a direct URL
                 selected_entry = {'url': url_or_query}
@@ -556,6 +492,48 @@ class MusicCog(commands.Cog):
             print(f"Error fetching search results: {e}")
             # await ctx.send("An unexpected error occurred while searching YouTube.")
             return []
+    
+    async def select_song(self, ctx, entries: list, url_or_query):
+        # Generate the search results list
+        search_result = [
+            f"({idx+1}). **[{entry['title']}]({entry['url']})** • `{self.format_duration(entry['duration'])}`"
+            for idx, entry in enumerate(entries)
+        ]
+
+        # Create and send the embed with search results
+        embed = discord.Embed(color=0x8A3215)
+        embed.add_field(
+            name=f"**Search Results for '{url_or_query}':**",
+            value='\n'.join(search_result),
+            inline=False
+        )
+        embed.set_footer(
+            text=f"Please select the desired song by typing a number between 1 and {len(entries)}."
+        )
+        await ctx.send(embed=embed)
+
+        # Wait for the user's response
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+
+        try:
+            # Wait for the user's response
+            reply = await self.bot.wait_for('message', check=check, timeout=30)
+            if not reply.content.isdigit():
+                await ctx.send("Invalid input. The command has been canceled.")
+                return
+
+            index = int(reply.content) - 1
+            if 0 <= index < len(entries):
+                selected_entry = entries[index]
+            else:
+                await ctx.send("Invalid selection. The command has been canceled.")
+                return
+        except asyncio.TimeoutError:
+            await ctx.send("No selection made in time. The command has been canceled.")
+            return
+        
+        return selected_entry
         
     async def extract_song_info(self, url):
         loop = asyncio.get_event_loop()
@@ -573,6 +551,8 @@ class MusicCog(commands.Cog):
             'webpage_url': data.get('webpage_url'),
         }
         return song_info
+    
+    
 
     def format_duration(self, seconds: int) -> str:
         """Convert seconds to MM:SS format."""
