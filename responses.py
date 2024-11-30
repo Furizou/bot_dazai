@@ -1,8 +1,12 @@
 import asyncio
 from random import choice, randint
+import re
 import time
+import urllib.parse
+import urllib.request
 from discord import Message
 import discord
+import urllib
 # from main import voice_client_dict, ytdl, ffmpeg_options
 from apps.ffmpeg_setup import voice_client_dict, ytdl, ffmpeg_options, music_queue, timeout_timers
 
@@ -14,8 +18,10 @@ async def get_response(user_input: str, message: Message) -> str:
         return 'apaan'
     elif lowered.startswith('play'):
         result = await play_music(message)
-        # return f"Now Playing: {result}"
-        
+        return result
+    
+    elif lowered.startswith('qplay'):
+        result = await quickplay_music(message)
         return result
     
     elif lowered.startswith('skip'):
@@ -55,8 +61,8 @@ async def get_response(user_input: str, message: Message) -> str:
                 'Mana kutau kau mau apa',])
 
     # raise NotImplementedError('Code is missing...')
-    
-async def play_music(message: Message):
+
+async def quickplay_music(message: Message):
     voice_channel = message.author.voice.channel  # Get the user's voice channel
     voice_channel_id = voice_channel.id
 
@@ -74,6 +80,122 @@ async def play_music(message: Message):
         loop = asyncio.get_event_loop()
 
         # Use yt-dlp to extract song metadata
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
+
+        if ("tiktok.com" in url) and (not data.get("url")):
+            return "This TikTok video is not compatible for playback."
+
+        # Handle playlists by taking the first entry
+        if 'entries' in data:
+            data = data['entries'][0]
+
+        song_url = data['url']
+        song_title = data.get('title', 'Unknown Title')
+        song_duration = data.get('duration', 0)
+        thumbnail = data.get('thumbnail', None)
+        webpage_url = data.get('webpage_url')  # The original video URL
+
+        # Prepare the quickplay song dictionary
+        quickplay_song = {
+            'title': song_title,
+            'url': song_url,
+            'webpage_url': webpage_url,
+            'duration': song_duration,
+            'thumbnail': thumbnail,
+            'requested_by': message.author
+        }
+
+        # Insert the quickplay song after the current song in the queue
+        music_queue[voice_channel_id].insert(1, quickplay_song)
+
+        print(f"Quickplaying in {voice_channel.name}: {song_title}")
+
+        # Send an embed message with the quickplay song info
+        embed = discord.Embed(
+            title=song_title,
+            url=webpage_url,
+            description=f"Queue Length: {len(music_queue[voice_channel_id])}",
+            color=0x8A3215,
+        )
+        embed.set_author(name="Quickplaying 😎")
+        if thumbnail:
+            embed.set_thumbnail(url=thumbnail)
+        await message.channel.send(embed=embed)
+
+        # Cancel any existing timeout timer
+        await cancel_timeout_timer(voice_channel)
+
+        # Skip the current song (which will remove it from the queue)
+        await skip_music(message)
+
+        return f"Now Quickplaying: {song_title}"
+    except Exception as e:
+        print(f"Error in quickplay_music: {e}")
+        return "Failed to quickplay the requested song."
+
+async def play_music(message: Message):
+    voice_channel = message.author.voice.channel  # Get the user's voice channel
+    voice_channel_id = voice_channel.id
+    
+    youtube_base_url = 'https://www.youtube.com/'
+    youtube_results_url = youtube_base_url + 'results?'
+    youtube_watch_url = youtube_base_url + 'watch?v='
+
+    # Ensure the music queue is initialized for the voice channel
+    if voice_channel_id not in music_queue:
+        music_queue[voice_channel_id] = []
+
+    try:
+        # Connect to the voice channel if not already connected
+        if voice_channel_id not in voice_client_dict or voice_client_dict[voice_channel_id] is None:
+            voice_client = await voice_channel.connect()
+            voice_client_dict[voice_channel_id] = voice_client
+
+        url = message.content.split()[1]
+        if youtube_base_url not in url:
+            await message.channel.send('tessszz')
+            # query_string = urllib.parse.urlencode({
+            #     'search_query': ' '.join(message.content.split()[1:])
+            # })
+            
+            # content = urllib.request.urlopen(
+            #     youtube_results_url + query_string
+            # )
+            
+            # search_queries = re.findall(r'/watch\?v=(.{11})', content.read().decode())
+            # search_result = []
+            
+            entries = await search_youtube(' '.join(message.content.split()[1:]))
+
+            if not entries:
+                await message.channel.send("No results found.")
+                return
+            
+            search_result = [
+                f"({idx+1}). **[{entry['title']}]({entry['webpage_url']})** • `{format_duration(entry['duration'])}`"
+                for idx, entry in enumerate(entries)
+            ]
+
+            await message.channel.send('disini')
+            embed = discord.Embed(color=0x8A3215)
+            
+            embed.add_field(
+                name=f"**📻 Music Query for {url}:**",
+                value='\n'.join(search_result),
+                inline=False
+            )
+
+            # Footer with queue length
+            embed.set_footer(
+                text=f"please select the desired music"
+            )            
+            await message.channel.send(embed=embed)
+            # await message.channel.send('tesss')
+            
+            return    
+
+        # Use yt-dlp to extract song metadata
+        loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
 
         if ("tiktok.com" in url) and (not data.get("url")):
@@ -140,21 +262,13 @@ async def play_next_in_queue(voice_channel, text_channel):
     current_song = music_queue[voice_channel_id][0]
 
     try:
-        # Stop any existing playback
-        if voice_client_dict[voice_channel_id].is_playing():
-            voice_client_dict[voice_channel_id].stop()
+        # Do not stop any existing playback here
 
         # Use the direct audio URL
         source = current_song['url']
 
-        # # FFmpeg options
-        # ffmpeg_options = {
-        #     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-        #     'options': '-vn'
-        # }
-
         # Play the current song
-        player = discord.FFmpegPCMAudio(source, **ffmpeg_options)
+        player = discord.FFmpegOpusAudio(source, **ffmpeg_options)
         voice_client = voice_client_dict[voice_channel_id]
 
         # Get the main event loop
@@ -185,7 +299,7 @@ async def play_next_in_queue(voice_channel, text_channel):
         embed.set_author(name="🎵 Now Playing")
         if thumbnail := current_song['thumbnail']:
             embed.set_thumbnail(url=thumbnail)
-            
+                
         embed.description = f"•`{format_duration(current_song['duration'])}`\n• <@{current_song['requested_by'].id}>"
         embed.set_footer(
             text=f"Song By: {current_song.get('uploader', 'Unknown')} • Today at {discord.utils.utcnow().strftime('%H:%M')}."
@@ -201,8 +315,8 @@ async def handle_next_song(voice_channel, text_channel):
     """Handle the transition to the next song or start the timeout timer."""
     voice_channel_id = voice_channel.id
 
-    # Remove the current song from the queue
-    if len(music_queue[voice_channel_id]) > 0:
+    # Remove the current song from the queue if it's still there
+    if voice_channel_id in music_queue and len(music_queue[voice_channel_id]) > 0:
         music_queue[voice_channel_id].pop(0)
 
     # If the queue has more songs, play the next one
@@ -233,17 +347,8 @@ async def skip_music(message: Message):
         if voice_client_dict[voice_channel_id].is_playing():
             voice_client_dict[voice_channel_id].stop()
 
-        # Remove the currently playing song from the queue
-        if voice_channel_id in music_queue and len(music_queue[voice_channel_id]) > 0:
-            music_queue[voice_channel_id].pop(0)
-
-        # Trigger the next song if the queue is not empty
-        if len(music_queue[voice_channel_id]) > 0:
-            await play_next_in_queue(voice_channel, message.channel)
-        else:
-            print(f"Queue is now empty in {voice_channel.name}")
-            if voice_channel_id not in timeout_timers:
-                await start_timeout_timer(voice_channel)
+        # Do not remove the current song or call play_next_in_queue here
+        # The after_playing callback will handle this
 
         return f"Skipped to the next song in {voice_channel.name}."
     except Exception as e:
@@ -376,3 +481,32 @@ def format_duration(seconds: int) -> str:
     """Convert seconds to MM:SS format."""
     minutes, seconds = divmod(seconds, 60)
     return f"{minutes}:{seconds:02d}"
+
+
+async def search_youtube(query, max_results=5):
+    loop = asyncio.get_event_loop()
+    try:
+        search_url = f"ytsearch{max_results}:{query}"
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_url, download=False))
+        return data['entries']
+    except Exception as e:
+        print(f"Error fetching search results: {e}")
+        return []
+
+# async def get_video_info(video_id):
+#     """Asynchronously fetch video information using yt_dlp."""
+#     video_url = f"https://www.youtube.com/watch?v={video_id}"
+#     loop = asyncio.get_event_loop()
+#     try:
+#         data = await loop.run_in_executor(None, lambda: ytdl.extract_info(video_url, download=False))
+#         title = data.get('title', 'Unknown Title')
+#         webpage_url = data.get('webpage_url', video_url)
+#         duration = data.get('duration', 0)
+#         return {
+#             'title': title,
+#             'webpage_url': webpage_url,
+#             'duration': duration
+#         }
+#     except Exception as e:
+#         print(f"Error fetching info for video ID {video_id}: {e}")
+#         return None
