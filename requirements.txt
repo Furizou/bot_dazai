@@ -3,3 +3,5 @@ python-dotenv
 PyNaCl
 asyncio
 yt-dlp
+google-api-python-client
+isodate

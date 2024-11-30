@@ -1,19 +1,27 @@
+from typing import Final
 import discord
 from discord.ext import commands
 import asyncio
 import yt_dlp
 from apps.ffmpeg_setup import voice_client_dict, ytdl, ffmpeg_options, music_queue, timeout_timers
-
-# import logging
-
-# At the top of music_cog.py
-# logging.basicConfig(level=logging.DEBUG)
-
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+import isodate
+import os
 
 class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot  # Gives access to the bot instance
-        # print("MusicCog loaded")
+        
+        
+        # Load the YouTube API key here
+        self.YOUTUBE_API_KEY: Final[str] = os.getenv('YOUTUBE_API_KEY')
+        print(f"YOUTUBE_API_KEY: {self.YOUTUBE_API_KEY}")  # Temporary for debugging
+
+        if not self.YOUTUBE_API_KEY:
+            print("YOUTUBE_API_KEY is not set. Please set the environment variable.")
+            # Alternatively, you can raise an exception
+            raise ValueError("YOUTUBE_API_KEY environment variable not set.")
 
     # ---------------------- Commands ----------------------
 
@@ -60,7 +68,7 @@ class MusicCog(commands.Cog):
             music_queue[voice_channel_id] = []
 
         try:
-             # Connect to the voice channel if not already connected
+            # Connect to the voice channel if not already connected
             if (voice_channel_id not in voice_client_dict) or (not voice_client_dict[voice_channel_id].is_connected()):
                 try:
                     voice_client = await voice_channel.connect()
@@ -75,7 +83,6 @@ class MusicCog(commands.Cog):
             else:
                 voice_client = voice_client_dict[voice_channel_id]
 
-        # try:
             # Check if it's a URL or search query
             if not url_or_query.startswith('http'):
                 # It's a search query
@@ -87,7 +94,7 @@ class MusicCog(commands.Cog):
 
                 # Generate the search results list
                 search_result = [
-                    f"({idx+1}). **[{entry['title']}]({entry['webpage_url']})** • `{self.format_duration(entry['duration'])}`"
+                    f"({idx+1}). **[{entry['title']}]({entry['url']})** • `{self.format_duration(entry['duration'])}`"
                     for idx, entry in enumerate(entries)
                 ]
 
@@ -111,7 +118,7 @@ class MusicCog(commands.Cog):
                     reply = await self.bot.wait_for('message', check=check, timeout=30)
                     index = int(reply.content) - 1
                     if 0 <= index < len(entries):
-                        data = entries[index]
+                        selected_entry = entries[index]
                     else:
                         await ctx.send("Invalid selection.")
                         return
@@ -120,39 +127,32 @@ class MusicCog(commands.Cog):
                     return
             else:
                 # It's a direct URL
-                loop = asyncio.get_event_loop()
-                data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url_or_query, download=False))
+                selected_entry = {'url': url_or_query}
 
-                if 'entries' in data:
-                    data = data['entries'][0]
+            # Extract song information using yt_dlp
+            selected_url = selected_entry['url']
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(selected_url, download=False))
 
-            # Extract song information
-            song_url = data['url']
-            song_title = data.get('title', 'Unknown Title')
-            song_duration = data.get('duration', 0)
-            thumbnail = data.get('thumbnail', None)
-            webpage_url = data.get('webpage_url')
+            if 'entries' in data:
+                data = data['entries'][0]
 
+            song_info = await self.extract_song_info(selected_url)
+            song_info['requested_by'] = ctx.author
+            
             # Add to the queue for the voice channel
-            music_queue[voice_channel_id].append({
-                'title': song_title,
-                'url': song_url,
-                'webpage_url': webpage_url,
-                'duration': song_duration,
-                'thumbnail': thumbnail,
-                'requested_by': ctx.author
-            })
-            print(f"Added to queue in {voice_channel.name}: {song_title}")
-
+            music_queue[voice_channel_id].append(song_info)
+            print(f"Added to queue in {voice_channel.name}: {song_info['title']}")
+    
             # Send an embed message with the song info
             embed = discord.Embed(
-                title=song_title,
-                url=webpage_url,
+                title=song_info['title'],
+                url=song_info['url'],
                 description=f"Queue Length: {len(music_queue[voice_channel_id])}",
                 color=0x8A3215,
             )
             embed.set_author(name="Added to Queue 🎶")
-            if thumbnail:
+            if thumbnail := song_info['thumbnail']:
                 embed.set_thumbnail(url=thumbnail)
             await ctx.send(embed=embed)
 
@@ -164,8 +164,7 @@ class MusicCog(commands.Cog):
                 await self.play_next_in_queue(voice_channel, ctx.channel)
 
         except Exception as e:
-            print(f"Error in play_music: {e.with_traceback()}")
-            # e.with_traceback()
+            print(f"Error in play_music: {e}")
             await ctx.send("Failed to play the requested song.")
 
     async def _quickplay_music(self, ctx, url_or_query: str):
@@ -181,6 +180,8 @@ class MusicCog(commands.Cog):
             if voice_channel_id not in voice_client_dict or not voice_client_dict[voice_channel_id].is_connected():
                 voice_client = await voice_channel.connect()
                 voice_client_dict[voice_channel_id] = voice_client
+            else:
+                voice_client = voice_client_dict[voice_channel_id]
 
             # Check if it's a URL or search query
             if not url_or_query.startswith('http'):
@@ -193,7 +194,7 @@ class MusicCog(commands.Cog):
 
                 # Generate the search results list
                 search_result = [
-                    f"({idx+1}). **[{entry['title']}]({entry['webpage_url']})** • `{self.format_duration(entry['duration'])}`"
+                    f"({idx+1}). **[{entry['title']}]({entry['url']})** • `{self.format_duration(entry['duration'])}`"
                     for idx, entry in enumerate(entries)
                 ]
 
@@ -217,7 +218,7 @@ class MusicCog(commands.Cog):
                     reply = await self.bot.wait_for('message', check=check, timeout=30)
                     index = int(reply.content) - 1
                     if 0 <= index < len(entries):
-                        data = entries[index]
+                        selected_entry = entries[index]
                     else:
                         await ctx.send("Invalid selection.")
                         return
@@ -226,43 +227,34 @@ class MusicCog(commands.Cog):
                     return
             else:
                 # It's a direct URL
-                loop = asyncio.get_event_loop()
-                data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url_or_query, download=False))
+                selected_entry = {'url': url_or_query}
 
-                if 'entries' in data:
-                    data = data['entries'][0]
+            # Extract song information using yt_dlp
+            selected_url = selected_entry['url']
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(selected_url, download=False))
+
+            if 'entries' in data:
+                data = data['entries'][0]
 
             # Extract song information
-            song_url = data['url']
-            song_title = data.get('title', 'Unknown Title')
-            song_duration = data.get('duration', 0)
-            thumbnail = data.get('thumbnail', None)
-            webpage_url = data.get('webpage_url')
-
-            # Prepare the quickplay song dictionary
-            quickplay_song = {
-                'title': song_title,
-                'url': song_url,
-                'webpage_url': webpage_url,
-                'duration': song_duration,
-                'thumbnail': thumbnail,
-                'requested_by': ctx.author
-            }
+            song_info = await self.extract_song_info(selected_url)
+            song_info['requested_by'] = ctx.author
 
             # Insert the quickplay song after the current song in the queue
-            music_queue[voice_channel_id].insert(1, quickplay_song)
+            music_queue[voice_channel_id].insert(1, song_info)
 
-            print(f"Quickplaying in {voice_channel.name}: {song_title}")
+            print(f"Quickplaying in {voice_channel.name}: {song_info['title']}")
 
             # Send an embed message with the quickplay song info
             embed = discord.Embed(
-                title=song_title,
-                url=webpage_url,
+                title=song_info['title'],
+                url=song_info['url'],
                 description=f"Queue Length: {len(music_queue[voice_channel_id])}",
                 color=0x8A3215,
             )
             embed.set_author(name="Quickplaying 🎵")
-            if thumbnail:
+            if thumbnail := song_info['thumbnail']:
                 embed.set_thumbnail(url=thumbnail)
             await ctx.send(embed=embed)
 
@@ -511,14 +503,76 @@ class MusicCog(commands.Cog):
             print(f"Timeout canceled for {voice_channel.name} due to activity.")
 
     async def search_youtube(self, query, max_results=5):
-        loop = asyncio.get_event_loop()
         try:
-            search_url = f"ytsearch{max_results}:{query}"
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_url, download=False))
-            return data['entries']
+            if not self.YOUTUBE_API_KEY:
+                print("YOUTUBE_API_KEY is not set.")
+                # await ctx.send("Internal error: API key not set.")
+                return []
+
+            youtube = build('youtube', 'v3', developerKey=self.YOUTUBE_API_KEY)
+
+            request = youtube.search().list(
+                q=query,
+                part='id,snippet',
+                maxResults=max_results,
+                type='video'
+            )
+            response = request.execute()
+            entries = []
+            video_ids = []
+            for item in response['items']:
+                video_id = item['id']['videoId']
+                video_ids.append(video_id)
+                title = item['snippet']['title']
+                thumbnail = item['snippet']['thumbnails']['high']['url']
+                entries.append({
+                    'title': title,
+                    'id': video_id,
+                    'url': f'https://www.youtube.com/watch?v={video_id}',
+                    'duration': None,  # Will update later
+                    'thumbnail': thumbnail
+                })
+            # Get durations in a batch request
+            video_request = youtube.videos().list(
+                part='contentDetails',
+                id=','.join(video_ids)
+            )
+            video_response = video_request.execute()
+            durations = {}
+            for item in video_response['items']:
+                video_id = item['id']
+                duration_iso = item['contentDetails']['duration']
+                duration_seconds = isodate.parse_duration(duration_iso).total_seconds()
+                durations[video_id] = duration_seconds
+            # Update entries with durations
+            for entry in entries:
+                entry['duration'] = durations.get(entry['id'], 0)
+            return entries
+        except HttpError as e:
+            print(f"HTTP error occurred: {e}")
+            # await ctx.send("Failed to fetch search results from YouTube.")
+            return []
         except Exception as e:
             print(f"Error fetching search results: {e}")
+            # await ctx.send("An unexpected error occurred while searching YouTube.")
             return []
+        
+    async def extract_song_info(self, url):
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
+
+        if 'entries' in data:
+            data = data['entries'][0]
+
+        # Extract song information
+        song_info = {
+            'url': data['url'],
+            'title': data.get('title', 'Unknown Title'),
+            'duration': data.get('duration', 0),
+            'thumbnail': data.get('thumbnail', None),
+            'webpage_url': data.get('webpage_url'),
+        }
+        return song_info
 
     def format_duration(self, seconds: int) -> str:
         """Convert seconds to MM:SS format."""
