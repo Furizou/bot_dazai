@@ -1,76 +1,54 @@
+# main.py
 from typing import Final
 import os
+import discord
 from dotenv import load_dotenv
-from discord import Intents, Client, Message
-from responses import get_response
-from apps.ffmpeg_setup import voice_client_dict, ytdl, yt_dl_options, ffmpeg_options
-import yt_dlp
+from discord.ext import commands
+from discord import Intents
+from cogs.music_cog import MusicCog  # Import the MusicCog
+from cogs.general_cog import GeneralCog  # Import the GeneralCog
+from apps.ffmpeg_setup import yt_dl_options
+import asyncio
 
-# STEP 0: load env
+# Load environment variables
 load_dotenv()
 TOKEN: Final[str] = os.getenv('DISCORD_TOKEN')
 
-# STEP 1: bot setup
-intents: Intents = Intents.default()
-intents.message_content = True #NOQA
-client: Client = Client(intents=intents)
+# Bot setup
+intents = Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='<', intents=intents)
 
-# MUSICS
-ytdl = yt_dlp.YoutubeDL(yt_dl_options)
+# Remove default help command if you plan to add a custom one
+bot.remove_command('help')
 
-# STEP 2: msg functionality
-async def send_message(message: Message, user_message: str) -> None:
-    if not user_message:
-        print('(Message was empty because intents was not enabled probably)')
-        return
-    
-    if is_private := user_message[0] == '?':
-        user_message = user_message[1:]
+# Handling startup
+@bot.event
+async def on_ready():
+    print(f'{bot.user} is now running!')
+
+async def main():
+    # Load Opus library
+    # if not discord.opus.is_loaded():
+    #     discord.opus.load_opus('opus')
         
-    try:
-        response: str = await get_response(user_message, message)
-        
-        # if response == None:
-        #     response = "Sorry, I couldn't process that request."
-        
-        if is_private:
-            await message.author.send(response)
-        else:
-            await message.channel.send(response)
-        # await message.author.send(response) if is_private else await message.channel.send(response)
-        
-    except Exception as e:
-        print(e)
-        
-# STEP 3: handling startup
-@client.event
-async def on_ready() -> None:
-    print(f'{client.user} is now running!')
-    
-# STEP 4: Handling incoming
-@client.event
-async def on_message(message: Message) -> None:
-    if message.author == client.user:
-        return
-    
-    # Check if the message is empty
-    if not message.content:
-        return
-    
-    if message.content[0] != '>':
-        return
-    
-    username: str = str(message.author)
-    user_message: str = message.content[1:]
-    channel: str = str(message.channel)
-    
-    print(f'[{channel}] {username}: "{user_message}"')
-    await send_message(message, user_message)
-    
-# STEP 5: main entry point
-def main() -> None:
-    client.run(token=TOKEN)
-    
+    async with bot:
+        # Load the cogs
+        try:
+            await bot.add_cog(MusicCog(bot))
+            print("MusicCog added successfully.")
+        except Exception as e:
+            print(f"Failed to load MusicCog: {e}")
+
+        try:
+            await bot.add_cog(GeneralCog(bot))
+            print("GeneralCog added successfully.")
+        except Exception as e:
+            print(f"Failed to load GeneralCog: {e}")
+
+        await bot.start(TOKEN)
+
 
 if __name__ == '__main__':
-    main()
+    # Run the main function
+    asyncio.run(main())
