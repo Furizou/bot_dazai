@@ -10,10 +10,110 @@ from googleapiclient.errors import HttpError
 import isodate
 import os
 
+from discord.ui import View, Button
+from discord import ButtonStyle
+
+class MusicControlView(View):
+    def __init__(self, voice_channel_id: int, music_cog: commands.Cog):
+        super().__init__(timeout=None)  # Persistent view
+        self.voice_channel_id = voice_channel_id
+        self.music_cog = music_cog  # Reference to MusicCog to call its methods
+
+    async def is_authorized(self, interaction: discord.Interaction) -> bool:
+        """
+        Checks if the user is in the same voice channel as the bot.
+        Sends an ephemeral message if the check fails.
+
+        Args:
+            interaction (discord.Interaction): The interaction triggering the button.
+
+        Returns:
+            bool: True if authorized, False otherwise.
+        """
+        user_voice = interaction.user.voice
+        if not user_voice or user_voice.channel.id != self.voice_channel_id:
+            await interaction.response.send_message(
+                "You must be in the voice channel to use this button.", 
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Pause", style=ButtonStyle.grey, emoji="⏯️")
+    async def pause_resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Toggle between pausing and resuming the music."""
+        # Authorization Check
+        if not await self.is_authorized(interaction):
+            return
+
+        # Retrieve the voice client
+        voice_client = voice_client_dict.get(self.voice_channel_id)
+        if not voice_client:
+            await interaction.response.send_message(
+                "I'm not connected to a voice channel.", 
+                ephemeral=True
+            )
+            return
+
+        if voice_client.is_playing():
+            await self.music_cog._pause_music(interaction)
+            button.label = "Resume"
+            button.style = ButtonStyle.success
+            await interaction.message.edit(view=self)
+        elif voice_client.is_paused():
+            await self.music_cog._resume_music(interaction)
+            button.label = "Pause"
+            button.style = ButtonStyle.grey
+            await interaction.message.edit(view=self)
+        else:
+            await interaction.response.send_message(
+                "No music is playing currently.", 
+                ephemeral=True  # User-specific message
+            )
+    
+    @discord.ui.button(label="Skip", style=ButtonStyle.grey, emoji="⏭️")
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Skip to the next music queue."""
+        # Authorization Check
+        if not await self.is_authorized(interaction):
+            return
+
+        # Call the show_queue method from MusicCog
+        await self.music_cog._skip_music(interaction)
+
+    @discord.ui.button(label="Stop", style=ButtonStyle.grey, emoji="⏹️")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Stop the music playback and disconnect the bot."""
+        # Authorization Check
+        if not await self.is_authorized(interaction):
+            return
+
+        # Call the stop_music method from MusicCog
+        await self.music_cog._stop_music(interaction)
+
+        # Disable all buttons after stopping
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)
+
+        await interaction.response.send_message(
+            f"Playback stopped and disconnected from {interaction.user.voice.channel.name}.", 
+            ephemeral=False  # Public message
+        )
+
+    @discord.ui.button(label="Show Queue", style=ButtonStyle.grey, emoji="📜")
+    async def show_queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Display the current music queue."""
+        # Authorization Check
+        if not await self.is_authorized(interaction):
+            return
+
+        # Call the show_queue method from MusicCog
+        await self.music_cog._show_queue(interaction)
+
 class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot  # Gives access to the bot instance
-        
         
         # Load the YouTube API key here
         self.YOUTUBE_API_KEY: Final[str] = os.getenv('YOUTUBE_API_KEY')
@@ -39,7 +139,7 @@ class MusicCog(commands.Cog):
         await self._skip_music(ctx)
 
     @commands.command(name='queue')
-    async def show_queue(self, ctx):
+    async def show_queue_command(self, ctx):
         await self._show_queue(ctx)
 
     @commands.command(name='prune')
@@ -65,10 +165,17 @@ class MusicCog(commands.Cog):
         voice_channel_id = voice_channel.id
 
         # Ensure the music queue is initialized for the voice channel
-        if voice_channel_id not in music_queue:
+        if voice_channel_id not in music_queue: 
             music_queue[voice_channel_id] = []
 
         try:
+            # Check if bot has necessary permissions in the channel
+            bot_permissions = ctx.channel.permissions_for(ctx.guild.me)
+            if not bot_permissions.send_messages or not bot_permissions.read_message_history:
+                print("I need the **Send Messages** and **Read Message History** permissions to function properly.")
+                await ctx.send("I need the **Send Messages** and **Read Message History** permissions to function properly.")
+                return
+
             # Connect to the voice channel if not already connected
             if (voice_channel_id not in voice_client_dict) or (not voice_client_dict[voice_channel_id].is_connected()):
                 try:
@@ -92,8 +199,11 @@ class MusicCog(commands.Cog):
                 if not entries:
                     await ctx.reply("No results found.", mention_author=False)
                     return
-                
+
                 selected_entry = await self.select_song(ctx=ctx, entries=entries, url_or_query=url_or_query)
+                if not selected_entry:
+                    # User canceled or invalid selection
+                    return
             else:
                 # It's a direct URL
                 selected_entry = {'url': url_or_query}
@@ -122,7 +232,7 @@ class MusicCog(commands.Cog):
             # Add to the queue for the voice channel
             music_queue[voice_channel_id].append(song_info)
             print(f"Added to queue in {voice_channel.name}: {song_info['title']}")
-    
+
             # Send an embed message with the song info
             embed = discord.Embed(
                 title=song_info['title'],
@@ -134,7 +244,7 @@ class MusicCog(commands.Cog):
             if thumbnail := song_info['thumbnail']:
                 embed.set_thumbnail(url=thumbnail)
             await loading_message.edit(embed=embed)
-            
+
             # Cancel any existing timeout timer
             await self.cancel_timeout_timer(voice_channel)
 
@@ -155,6 +265,12 @@ class MusicCog(commands.Cog):
             music_queue[voice_channel_id] = []
 
         try:
+            # Check if bot has necessary permissions in the channel
+            bot_permissions = ctx.channel.permissions_for(ctx.guild.me)
+            if not bot_permissions.send_messages or not bot_permissions.read_message_history:
+                await ctx.send("I need the **Send Messages** and **Read Message History** permissions to function properly.")
+                return
+
             # Connect to the voice channel if not already connected
             if voice_channel_id not in voice_client_dict or not voice_client_dict[voice_channel_id].is_connected():
                 voice_client = await voice_channel.connect()
@@ -170,8 +286,11 @@ class MusicCog(commands.Cog):
                 if not entries:
                     await ctx.reply("No results found.", mention_author=False)
                     return
-                
+
                 selected_entry = await self.select_song(ctx=ctx, entries=entries, url_or_query=url_or_query)
+                if not selected_entry:
+                    # User canceled or invalid selection
+                    return
             else:
                 # It's a direct URL
                 selected_entry = {'url': url_or_query}
@@ -224,10 +343,37 @@ class MusicCog(commands.Cog):
             print(f"Error in quickplay_music: {e}")
             await ctx.reply("Failed to quickplay the requested song.", mention_author=False)
 
-    async def _skip_music(self, ctx):
-        voice_channel = ctx.author.voice.channel
+    async def _skip_music(self, ctx: commands.Context | discord.Interaction, interaction=False):
+        # Determine if the caller is a Context or an Interaction
+        if isinstance(ctx, discord.Interaction):
+            user = ctx.user
+            interaction = True
+        else:
+            user = ctx.author
+
+        voice_channel = user.voice.channel
         voice_channel_id = voice_channel.id
         try:
+            # ----------------- Embed Message ------------------
+            song_info = music_queue[voice_channel_id][0]            
+            embed = discord.Embed(
+                title="**⏭️ Skipping Music..**",
+                description=f"[{song_info['title']}]({song_info['url']})",
+                color=0x8A3215,
+            )
+            if thumbnail := song_info['thumbnail']:
+                embed.set_thumbnail(url=thumbnail)
+            embed.set_footer(
+                icon_url=user.display_avatar.url, 
+                text=f"Skipped by: {user.display_name}"
+            )
+            
+            if interaction:
+                await ctx.response.send_message(embed=embed, ephemeral=False)
+            else: 
+                await ctx.reply(embed=embed, mention_author=False)
+            # --------------------------------------------------
+            
             # Stop current playback
             if voice_channel_id in voice_client_dict and voice_client_dict[voice_channel_id].is_playing():
                 voice_client_dict[voice_channel_id].stop()
@@ -235,33 +381,36 @@ class MusicCog(commands.Cog):
             # Do not remove the current song or call play_next_in_queue here
             # The after_playing callback will handle this
 
-            await ctx.reply(f"Skipped to the next song in {voice_channel.name}.", mention_author=False)
-
         except Exception as e:
             print(f"Error in skip_music for {voice_channel.name}: {e}")
-            await ctx.reply("Unable to skip the song.", mention_author=False)
+            await ctx.reply(
+                "Unable to skip the song.", 
+                mention_author=False
+            )
 
-    async def _show_queue(self, ctx):
-        voice_channel = ctx.author.voice.channel
-        voice_channel_id = voice_channel.id
-
+    async def _show_queue(self, ctx: commands.Context | discord.Interaction, interaction=False):
+        if isinstance(ctx, discord.Interaction):
+            voice_channel = ctx.user.voice.channel
+            interaction = True
+        else:
+            voice_channel = ctx.author.voice.channel
+        
         # Check if the queue is empty
-        if voice_channel_id not in music_queue or len(music_queue[voice_channel_id]) == 0:
+        if voice_channel.id not in music_queue or len(music_queue[voice_channel.id]) == 0:
             embed = discord.Embed(
                 description=f"The queue is empty in {voice_channel.name}.",
                 color=0x8A3215
             )
             await ctx.reply(embed=embed, mention_author=False)
-            return
 
         # Get the current song
-        current_song = music_queue[voice_channel_id][0]
-        queue_length = len(music_queue[voice_channel_id])
+        current_song = music_queue[voice_channel.id][0]
+        queue_length = len(music_queue[voice_channel.id])
 
         # Generate queue list using 'webpage_url' for hyperlinks
         queue_lines = [
-            f"({idx+1}). **[{song['title']}]({song['webpage_url']})** • `{self.format_duration(song['duration'])}` • <@{song['requested_by'].id}>"
-            for idx, song in enumerate(music_queue[voice_channel_id][1:])
+            f"({idx+1}). **[{song_info['title']}]({song_info['webpage_url']})** • `{self.format_duration(song_info['duration'])}` • <@{song_info['requested_by'].id}>"
+            for idx, song_info in enumerate(music_queue[voice_channel.id][1:])
         ]
 
         # Split queue list into chunks of 1024 characters
@@ -308,52 +457,161 @@ class MusicCog(commands.Cog):
             text=f"Queue Length: {queue_length}"
         )
 
+        if interaction:
+            return await ctx.response.send_message(embed=embed, ephemeral=False)
         await ctx.reply(embed=embed, mention_author=False)
+            
+    async def _pause_music(self, ctx: commands.Context | discord.Interaction, interaction=False):
+        
+        # Determine if the caller is a Context or an Interaction
+        if isinstance(ctx, discord.Interaction):
+            user = ctx.user
+            interaction = True
+        else:
+            user = ctx.author
 
-    async def _pause_music(self, ctx):
-        voice_channel_id = ctx.author.voice.channel.id
+        voice_channel = user.voice.channel
         try:
-            voice_client_dict[voice_channel_id].pause()
-            await ctx.reply("Music paused.", mention_author=False)
+            # ----------------- Embed Message ------------------
+            song_info = music_queue[voice_channel.id][0]            
+            embed = discord.Embed(
+                title="**⏸️ Pausing Music..**",
+                description=f"[{song_info['title']}]({song_info['url']})",
+                color=0x8A3215,
+            )
+            if thumbnail := song_info['thumbnail']:
+                embed.set_thumbnail(url=thumbnail)
+            embed.set_footer(
+                icon_url=user.display_avatar.url, 
+                text=f"Paused by: {user.display_name}"
+            )
+            if interaction:
+                await ctx.response.send_message(embed=embed, ephemeral=False)
+            else: 
+                await ctx.reply(embed=embed, mention_author=False)
+            # -------------------------------------------------
+            
+            voice_client_dict[voice_channel.id].pause()
         except Exception as e:
             print(f"Error in pause_music: {e}")
             await ctx.reply("Unable to pause the music.", mention_author=False)
 
-    async def _resume_music(self, ctx):
-        voice_channel_id = ctx.author.voice.channel.id
+    async def _resume_music(self, ctx: commands.Context | discord.Interaction, interaction=False):
+        
+        # Determine if the caller is a Context or an Interaction
+        if isinstance(ctx, discord.Interaction):
+            user = ctx.user
+            interaction = True
+        else:
+            user = ctx.author
+        
+        voice_channel_id = user.voice.channel.id
         try:
+            # ----------------- Embed Message ------------------
+            song_info = music_queue[voice_channel_id][0]            
+            embed = discord.Embed(
+                title="**⏯️ Resuming Music..**",
+                description=f"[{song_info['title']}]({song_info['url']})",
+                color=0x8A3215,
+            )
+            if thumbnail := song_info['thumbnail']:
+                embed.set_thumbnail(url=thumbnail)
+            embed.set_footer(
+                icon_url=user.display_avatar.url, 
+                text=f"Resumed by: {user.display_name}"
+            )
+            
+            if interaction:
+                await ctx.response.send_message(embed=embed, ephemeral=False)
+            else: 
+                await ctx.reply(embed=embed, mention_author=False)
+            # -------------------------------------------------
+            
             voice_client_dict[voice_channel_id].resume()
-            await ctx.reply("Music resumed.", mention_author=False)
         except Exception as e:
             print(f"Error in resume_music: {e}")
             await ctx.reply("Unable to resume the music.", mention_author=False)
 
-    async def _stop_music(self, ctx):
-        voice_channel = ctx.author.voice.channel
+    async def _stop_music(self, ctx: commands.Context | discord.Interaction, interaction=False):
+        # Determine if the caller is a Context or an Interaction
+        if isinstance(ctx, discord.Interaction):
+            user = ctx.user
+            interaction = True
+        else:
+            user = ctx.author
+
+        voice_channel = user.voice.channel
         voice_channel_id = voice_channel.id
+            
         try:
+            # ----------------- Embed Message ------------------  
+            if song_info := music_queue[voice_channel_id]:
+                song_info = song_info[0]
+                description = f"[{song_info['title']}]({song_info['url']})"
+            else:
+                description = f"Thankyou for using {self.bot.user.mention}"
+
+            embed = discord.Embed(
+                title="**⏹️ Stopping Music...**",
+                description=description,
+                color=0x8A3215,
+            )
+            if song_info and (thumbnail := song_info['thumbnail']):
+                embed.set_thumbnail(url=thumbnail)
+            embed.set_footer(
+                icon_url=user.display_avatar.url, 
+                text=f"Stopped by: {user.display_name}"
+            )
+            
+            if interaction:
+                await ctx.response.send_message(embed=embed, ephemeral=False)
+            else: 
+                await ctx.reply(embed=embed, mention_author=False)
+            # --------------------------------------------------
+            
             # Stop playback and disconnect, but do not clear the queue
             if voice_channel_id in voice_client_dict and voice_client_dict[voice_channel_id].is_connected():
                 await voice_client_dict[voice_channel_id].disconnect()
                 del voice_client_dict[voice_channel_id]
-            await ctx.reply(f"Playback stopped and disconnected from {voice_channel.name}.", mention_author=False)
         except Exception as e:
             print(f"Error in stop_music for {voice_channel.name}: {e}")
             await ctx.reply(f"Unable to stop playback in {voice_channel.name}.", mention_author=False)
 
-    async def _prune_queue(self, ctx):
+    async def _prune_queue(self, ctx_or_interaction):
+        """
+        Modify the _prune_queue method to handle both Context and Interaction objects.
+        """
+        # Determine if the caller is a Context or an Interaction
+        if isinstance(ctx_or_interaction, commands.Context):
+            ctx = ctx_or_interaction
+            interaction = None
+        elif isinstance(ctx_or_interaction, discord.Interaction):
+            interaction = ctx_or_interaction
+            ctx = await self.bot.get_context(ctx_or_interaction.message)
+        else:
+            return
+
         voice_channel = ctx.author.voice.channel
         voice_channel_id = voice_channel.id
         try:
             if voice_channel_id in music_queue:
                 # Clear the queue
                 music_queue[voice_channel_id].clear()
-                await ctx.reply(f"The queue for {voice_channel.name} has been cleared.", mention_author=False)
+                if interaction:
+                    await interaction.response.send_message(f"The queue for {voice_channel.name} has been cleared.", ephemeral=True)
+                else:
+                    await ctx.reply(f"The queue for {voice_channel.name} has been cleared.", mention_author=False)
             else:
-                await ctx.reply(f"No queue exists for {voice_channel.name}.", mention_author=False)
+                if interaction:
+                    await interaction.response.send_message(f"No queue exists for {voice_channel.name}.", ephemeral=True)
+                else:
+                    await ctx.reply(f"No queue exists for {voice_channel.name}.", mention_author=False)
         except Exception as e:
             print(f"Error in prune_queue for {voice_channel.name}: {e}")
-            await ctx.reply(f"Unable to clear the queue for {voice_channel.name}.", mention_author=False)
+            if interaction:
+                await interaction.response.send_message(f"Unable to clear the queue for {voice_channel.name}.", ephemeral=True)
+            else:
+                await ctx.reply(f"Unable to clear the queue for {voice_channel.name}.", mention_author=False)
 
     async def play_next_in_queue(self, voice_channel, text_channel):
         voice_channel_id = voice_channel.id
@@ -396,7 +654,11 @@ class MusicCog(commands.Cog):
 
             voice_client.play(player, after=after_playing)
 
-            # Send an embed message with the current song info
+            # Create and attach the MusicControlView
+            music_cog = self  # Since we're inside MusicCog
+            view = MusicControlView(voice_channel_id=voice_channel_id, music_cog=music_cog)
+
+            # Send an embed message with the current song info and attach the view
             embed = discord.Embed(
                 title=current_song["title"],
                 url=current_song["webpage_url"],
@@ -406,11 +668,11 @@ class MusicCog(commands.Cog):
             if thumbnail := current_song['thumbnail']:
                 embed.set_thumbnail(url=thumbnail)
 
-            embed.description = f"•`{self.format_duration(current_song['duration'])}`\n• <@{current_song['requested_by'].id}>"
+            embed.description = f"• `{self.format_duration(current_song['duration'])}`\n• <@{current_song['requested_by'].id}>"
             embed.set_footer(
                 text=f"Queue Length: {len(music_queue[voice_channel_id])}"
             )
-            await text_channel.send(embed=embed)
+            await text_channel.send(embed=embed, view=view)
 
             print(f"Now playing in {voice_channel.name}: {current_song['title']}")
 
@@ -513,7 +775,7 @@ class MusicCog(commands.Cog):
             print(f"Error fetching search results: {e}")
             # await ctx.send("An unexpected error occurred while searching YouTube.")
             return []
-    
+
     async def select_song(self, ctx, entries: list, url_or_query):
         # Generate the search results list
         search_result = [
@@ -542,20 +804,20 @@ class MusicCog(commands.Cog):
             reply = await self.bot.wait_for('message', check=check, timeout=30)
             if not reply.content.isdigit():
                 await ctx.reply("Invalid input. The command has been canceled.", mention_author=False)
-                return
+                return None
 
             index = int(reply.content) - 1
             if 0 <= index < len(entries):
                 selected_entry = entries[index]
             else:
                 await ctx.reply("Invalid selection. The command has been canceled.", mention_author=False)
-                return
+                return None
         except asyncio.TimeoutError:
             await ctx.reply("No selection made in time. The command has been canceled.", mention_author=False)
-            return
+            return None
         
         return selected_entry
-        
+
     async def extract_song_info(self, url):
         loop = asyncio.get_event_loop()
         try:
@@ -584,8 +846,6 @@ class MusicCog(commands.Cog):
             'webpage_url': data.get('webpage_url'),
         }
         return song_info
-    
-    
 
     def format_duration(self, seconds: int) -> str:
         """Convert seconds to MM:SS format."""
