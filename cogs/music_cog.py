@@ -126,35 +126,35 @@ class MusicCog(commands.Cog):
 
     # ---------------------- Commands ----------------------
 
-    @commands.command(name='play')
+    @commands.command(name='play', help="Play a song from YouTube using a URL or search query.")
     async def play_music(self, ctx, *, url_or_query: str):
         await self._play_music(ctx, url_or_query)
 
-    @commands.command(name='qplay')
+    @commands.command(name='qplay', help="Quickplay: Immediately play a song, ignoring queue")
     async def quickplay_music(self, ctx, *, url_or_query: str):
         await self._quickplay_music(ctx, url_or_query)
 
-    @commands.command(name='skip')
+    @commands.command(name='skip', help="Skip the current song and play the next one in the queue.")
     async def skip_music(self, ctx):
         await self._skip_music(ctx)
 
-    @commands.command(name='queue')
+    @commands.command(name='queue', help="Display the current music queue.")
     async def show_queue_command(self, ctx):
         await self._show_queue(ctx)
 
-    @commands.command(name='prune')
+    @commands.command(name='prune', help="Clear the music queue.")
     async def prune_queue(self, ctx):
         await self._prune_queue(ctx)
 
-    @commands.command(name='pause')
+    @commands.command(name='pause', help="Pause the current music playback.")
     async def pause_music(self, ctx):
         await self._pause_music(ctx)
 
-    @commands.command(name='resume')
+    @commands.command(name='resume', help="Resume the paused music.")
     async def resume_music(self, ctx):
         await self._resume_music(ctx)
 
-    @commands.command(name='stop')
+    @commands.command(name='stop', help="Stop music and disconnect from the VC.")
     async def stop_music(self, ctx):
         await self._stop_music(ctx)
 

@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from discord.ext import commands
 from discord import Intents
 from cogs.admin_cog import AdminCog
+from cogs.help_cog import HelpCog
 from cogs.music_cog import MusicCog  # Import the MusicCog
 from cogs.general_cog import GeneralCog  # Import the GeneralCog
 from apps.ffmpeg_setup import yt_dl_options
@@ -66,6 +67,12 @@ async def main():
             print("AdminCog added successfully.")
         except Exception as e:
             print(f"Failed to load AdminCog: {e}")
+            
+        try:
+            await bot.add_cog(HelpCog(bot))
+            print("HelpCog added successfully.")
+        except Exception as e:
+            print(f"Failed to load HelpCog: {e}")
 
         await bot.start(TOKEN)
 

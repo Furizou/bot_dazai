@@ -6,19 +6,16 @@ class GeneralCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # Command to say hello
-    @commands.command(name='hello')
+    @commands.command(name='hello', help="Bot greets you with a friendly message.")
     async def say_hello(self, ctx):
         await ctx.send('Hello there!')
 
-    # Command to play 'judol' game
-    @commands.command(name='judol')
+    @commands.command(name='judol', help="Play the 'judol' game")
     async def judol(self, ctx):
         number = random.randint(1, 6)
         await ctx.send(f'Congratulations! You got the number: {number}')
         
-    # Command to see the prefix
-    @commands.command(name='prefix')
+    @commands.command(name='prefix', help="Display the current server's command prefix.")
     async def prefix(self, ctx):
         prefix = self.bot.prefixes_dict.get(str(ctx.guild.id), '>')
         await ctx.reply(f'Current server\'s prefix is `{prefix}`', mention_author=False)
