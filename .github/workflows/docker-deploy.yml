@@ -41,4 +41,4 @@ jobs:
           script: |
             cd bot_dazai
             git pull
-            sudo docker compose up --build
+            sudo docker compose up --build -d
