@@ -16,6 +16,12 @@ class GeneralCog(commands.Cog):
     async def judol(self, ctx):
         number = random.randint(1, 6)
         await ctx.send(f'Congratulations! You got the number: {number}')
+        
+    # Command to see the prefix
+    @commands.command(name='prefix')
+    async def prefix(self, ctx):
+        prefix = self.bot.prefixes_dict.get(str(ctx.guild.id), '>')
+        await ctx.reply(f'Current server\'s prefix is `{prefix}`', mention_author=False)
 
     # Listener for on_message events
     @commands.Cog.listener()
