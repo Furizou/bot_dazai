@@ -27,8 +27,9 @@ jobs:
 
       - name: Build and push to Docker Hub
         run: |
-            docker build -t bot_dazai:$(date +%s) .
-            docker push bot_dazai:$(date +%s)
+          TIMESTAMP=$(date +%s)
+          docker build -t bot_dazai:$TIMESTAMP .
+          docker push bot_dazai:$TIMESTAMP
       
       - name: Set up remote SSH
         uses: appleboy/ssh-action@master
@@ -40,4 +41,4 @@ jobs:
           script: |
             cd bot_dazai
             git pull
-            docker compose up --build
+            sudo docker compose up --build
