@@ -26,9 +26,9 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push to Docker Hub
-        run:
-          docker build -t bot_dazai:$(date +%s) ./
-          docker push bot_dazai:$(date +%s)
+        run: |
+            docker build -t bot_dazai:$(date +%s) .
+            docker push bot_dazai:$(date +%s)
       
       - name: Set up remote SSH
         uses: appleboy/ssh-action@master
