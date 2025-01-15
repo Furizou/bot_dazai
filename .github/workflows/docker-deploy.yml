@@ -28,8 +28,8 @@ jobs:
       - name: Build and push to Docker Hub
         run: |
           TIMESTAMP=$(date +%s)
-          docker build -t bot_dazai:$TIMESTAMP .
-          docker push bot_dazai:$TIMESTAMP
+          docker build -t furizou/bot_dazai:$TIMESTAMP .
+          docker push furizou/bot_dazai:$TIMESTAMP
       
       - name: Set up remote SSH
         uses: appleboy/ssh-action@master
