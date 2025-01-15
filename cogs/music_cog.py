@@ -12,6 +12,8 @@ import os
 
 from discord.ui import View, Button
 from discord import ButtonStyle
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 
 class MusicControlView(View):
     def __init__(self, voice_channel_id: int, music_cog: commands.Cog):
@@ -117,7 +119,17 @@ class MusicCog(commands.Cog):
         
         # Load the YouTube API key here
         self.YOUTUBE_API_KEY: Final[str] = os.getenv('YOUTUBE_API_KEY')
-        # print(f"YOUTUBE_API_KEY: {self.YOUTUBE_API_KEY}")  # Temporary for debugging
+        
+        # --- Spotify Setup ---
+        self.SPOTIFY_CLIEND_ID: Final[str] = os.getenv("SPOTIFY_CLIENT_ID")
+        self.SPOTIFY_CLIENT_SECRET: Final[str] = os.getenv("SPOTIFY_CLIENT_SECRET")
+        self.spotify = spotipy.Spotify(
+            auth_manager=SpotifyClientCredentials(
+                client_id=self.SPOTIFY_CLIEND_ID,
+                client_secret=self.SPOTIFY_CLIENT_SECRET
+            )
+        )
+        # --- end of Spotify Setup ---
 
         if not self.YOUTUBE_API_KEY:
             print("YOUTUBE_API_KEY is not set. Please set the environment variable.")
@@ -126,7 +138,7 @@ class MusicCog(commands.Cog):
 
     # ---------------------- Commands ----------------------
 
-    @commands.command(name='play', help="Play a song from YouTube using a URL or search query.")
+    @commands.command(name='play', help="Play a song from YouTube/Spotify using a URL or search query.")
     async def play_music(self, ctx, *, url_or_query: str):
         await self._play_music(ctx, url_or_query)
 
@@ -190,7 +202,15 @@ class MusicCog(commands.Cog):
                     return
             else:
                 voice_client = voice_client_dict[voice_channel_id]
-
+            
+            # -------------------- adding to queue loading ----------------------
+            loading_embed = discord.Embed(
+                title="Processing your request...",
+                description="Please wait while we retrieve the song information. 🎵",
+                color=0x8A3215,
+            )
+            loading_message = await ctx.reply(embed=loading_embed, mention_author=False)
+            
             # Check if it's a URL or search query
             if not url_or_query.startswith('http'):
                 # It's a search query
@@ -204,17 +224,16 @@ class MusicCog(commands.Cog):
                 if not selected_entry:
                     # User canceled or invalid selection
                     return
+            
+            elif "spotify.com/track/" in url_or_query: # TODO: HANDLE SPOTIFY SEARCH
+                selected_entry = await self.search_spotify(ctx=ctx, url=url_or_query)
+                if not selected_entry:
+                    # User canceled or invalid selection
+                    return
+                
             else:
                 # It's a direct URL
                 selected_entry = {'url': url_or_query}
-
-            # -------------------- adding to queue loading ----------------------
-            loading_embed = discord.Embed(
-                title="Processing your request...",
-                description="Please wait while we retrieve the song information. 🎵",
-                color=0x8A3215,
-            )
-            loading_message = await ctx.reply(embed=loading_embed, mention_author=False)
             
             selected_url = selected_entry['url']
             try:
@@ -254,7 +273,7 @@ class MusicCog(commands.Cog):
 
         except Exception as e:
             print(f"Error in play_music: {e}")
-            await ctx.reply("Failed to play the requested song.", mention_author=False)
+            await ctx.reply(f"Failed to play the requested song. error {e}", mention_author=False)
 
     async def _quickplay_music(self, ctx, url_or_query: str):
         voice_channel = ctx.author.voice.channel
@@ -720,6 +739,30 @@ class MusicCog(commands.Cog):
             del timeout_timers[voice_channel_id]
             print(f"Timeout canceled for {voice_channel.name} due to activity.")
 
+    async def search_spotify(self, ctx, url: str):
+        track_id = ''
+        parts = url.split("/track/")
+        if len(parts) > 1:
+            track_part = parts[1]
+            # handle possible query params, e.g. ?si=...
+            track_id = track_part.split("?")[0]
+        else:
+            track_id = url # TODO: might fail (invalid link, give error or smth)
+        
+        # 2. Retrieve metadata from Spotify, convert to ytsearch query
+        track_info = self.spotify.track(track_id)
+        track_name = track_info['name']
+        artists = ", ".join(artist['name'] for artist in track_info['artists'])
+        query = f"{artists} - {track_name}"
+        
+        # 4. Search youtube normally (TAKES THE FIRST ENTRY! TODO: UPDATE)
+        youtube_entries = await self.search_youtube(query)
+        if not youtube_entries:
+            return None  # no results on YouTube
+        
+        selected_entry = youtube_entries[0] # takes just the first entries
+        return selected_entry
+        
     async def search_youtube(self, query, max_results=5):
         try:
             if not self.YOUTUBE_API_KEY:
@@ -748,7 +791,7 @@ class MusicCog(commands.Cog):
                     'title': title,
                     'id': video_id,
                     'url': f'https://www.youtube.com/watch?v={video_id}',
-                    'duration': None,  # Will update later
+                    'duration': None,  # TODO: Will update later
                     'thumbnail': thumbnail
                 })
             # Get durations in a batch request
