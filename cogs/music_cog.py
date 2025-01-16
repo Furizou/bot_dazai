@@ -11,7 +11,7 @@ import isodate
 import os
 
 from discord.ui import View, Button
-from discord import ButtonStyle
+from discord import ButtonStyle, Message
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 
@@ -171,196 +171,198 @@ class MusicCog(commands.Cog):
         await self._stop_music(ctx)
 
     # ---------------------- Helper Methods ----------------------
+    async def _handle_song_request(self, ctx, url_or_query: str) -> dict | None:
+        """
+        A helper that handles the main steps of:
+        - Checking user/bot permissions
+        - Pre-loading embed
+        - Checking if it's YT search, direct link, or Spotify link
+        - Searching or extracting via yt_dlp
+        - Returning the final song_info dict
 
-    async def _play_music(self, ctx, url_or_query: str):
-        voice_channel = ctx.author.voice.channel
-        voice_channel_id = voice_channel.id
+        Returns:
+        A dict containing song_info
+        or None if user canceled/ invalid/ or error occurred.
+        """
 
-        # Ensure the music queue is initialized for the voice channel
-        if voice_channel_id not in music_queue: 
-            music_queue[voice_channel_id] = []
+        # 1) Validate necessary permissions
+        bot_permissions = ctx.channel.permissions_for(ctx.guild.me)
+        if not bot_permissions.send_messages or not bot_permissions.read_message_history:
+            print("I need the **Send Messages** and **Read Message History** permissions to function properly.")
+            await ctx.send("I need the **Send Messages** and **Read Message History** permissions to function properly.")
+            return None
 
+        # 2) Create a 'pre_loading' embed
+        pre_loading_embed = discord.Embed(
+            title="Processing your request...",
+            description="Please wait while we query the requested song. 🎵",
+            color=0x8A3215,
+        )
+        pre_loading_message = None
+
+        selected_entry = None
+
+        # 3) Distinguish between search query, Spotify link, or direct link
+        if not url_or_query.startswith('http'):
+            pre_loading_message = await ctx.reply(embed=pre_loading_embed, mention_author=False)
+
+            entries = await self.search_youtube(url_or_query)
+            if not entries:
+                await ctx.reply("No results found.", mention_author=False)
+                return None
+
+            selected_entry = await self.select_song(
+                ctx=ctx,
+                entries=entries,
+                url_or_query=url_or_query,
+                loading_message=pre_loading_message
+            )
+            if not selected_entry:  # User canceled or invalid selection
+                return None
+
+        elif "spotify.com/track/" in url_or_query:
+            pre_loading_message = await ctx.reply(embed=pre_loading_embed, mention_author=False)
+            
+            selected_entry = await self.search_spotify(ctx=ctx, url=url_or_query)
+            if not selected_entry:  # canceled or invalid
+                return None
+
+        else:
+            selected_entry = {'url': url_or_query}
+
+        # Remove the pre-loading message if its been used
+        if pre_loading_message:
+            await pre_loading_message.delete() 
+
+        # 4) Create a loading embed for the actual extraction (yt_dlp)
+        loading_embed = discord.Embed(
+            title="Processing your request...",
+            description="Please wait while we retrieve the song information. 🎵",
+            color=0x8A3215,
+        )
+        loading_message = await ctx.reply(embed=loading_embed, mention_author=False)
+
+        selected_url = selected_entry['url']
         try:
-            # Check if bot has necessary permissions in the channel
-            bot_permissions = ctx.channel.permissions_for(ctx.guild.me)
-            if not bot_permissions.send_messages or not bot_permissions.read_message_history:
-                print("I need the **Send Messages** and **Read Message History** permissions to function properly.")
-                await ctx.send("I need the **Send Messages** and **Read Message History** permissions to function properly.")
-                return
+            song_info = await self.extract_song_info(selected_url)
+        except ValueError as e:
+            await loading_message.edit(embed=discord.Embed(
+                title="Error",
+                description=str(e),
+                color=0xFF0000
+            ))
+            return None
 
-            # Connect to the voice channel if not already connected
-            if (voice_channel_id not in voice_client_dict) or (not voice_client_dict[voice_channel_id].is_connected()):
-                try:
-                    voice_client = await voice_channel.connect()
-                    voice_client_dict[voice_channel_id] = voice_client
-                except discord.ClientException as e:
-                    # Already connected to a voice channel
-                    voice_client = voice_client_dict[voice_channel_id]
-                except Exception as e:
-                    print(f"Error connecting to voice channel: {e}")
-                    await ctx.reply("Failed to connect to the voice channel.", mention_author=False)
-                    return
-            else:
-                voice_client = voice_client_dict[voice_channel_id]
-            
-            # -------------------- adding to queue loading ----------------------
-            loading_embed = discord.Embed(
-                title="Processing your request...",
-                description="Please wait while we retrieve the song information. 🎵",
-                color=0x8A3215,
-            )
-            loading_message = await ctx.reply(embed=loading_embed, mention_author=False)
-            
-            # Check if it's a URL or search query
-            if not url_or_query.startswith('http'):
-                # It's a search query
-                entries = await self.search_youtube(url_or_query)
+        # If success, attach the 'requested_by' field
+        song_info['requested_by'] = ctx.author
 
-                if not entries:
-                    await ctx.reply("No results found.", mention_author=False)
-                    return
+        # Return both the final song_info and the in-progress loading_message
+        # so the caller can finalize the embed
+        return {
+            'song_info': song_info,
+            'loading_message': loading_message
+        }
+    
+    async def _prepare_voice_client_and_queue(self, ctx) -> tuple[discord.VoiceClient | None, int | None]:
+        """
+        Ensures we have a voice client connected in the user's voice channel
+        and that the queue dictionary is initialized for that channel.
 
-                selected_entry = await self.select_song(ctx=ctx, entries=entries, url_or_query=url_or_query)
-                if not selected_entry:
-                    # User canceled or invalid selection
-                    return
-            
-            elif "spotify.com/track/" in url_or_query: # TODO: HANDLE SPOTIFY SEARCH
-                selected_entry = await self.search_spotify(ctx=ctx, url=url_or_query)
-                if not selected_entry:
-                    # User canceled or invalid selection
-                    return
-                
-            else:
-                # It's a direct URL
-                selected_entry = {'url': url_or_query}
-            
-            selected_url = selected_entry['url']
-            try:
-                song_info = await self.extract_song_info(selected_url)
-            except ValueError as e:
-                await loading_message.edit(embed=discord.Embed(
-                    title="Error",
-                    description=str(e),
-                    color=0xFF0000
-                ))
-                return
-            # song_info = await self.extract_song_info(selected_url)
-            song_info['requested_by'] = ctx.author
-            
-            # Add to the queue for the voice channel
-            music_queue[voice_channel_id].append(song_info)
-            print(f"Added to queue in {voice_channel.name}: {song_info['title']}")
+        Returns:
+        (voice_client, voice_channel_id)
+        or (None, None) if a critical error occurred (like no voice channel, or failure to connect).
+        """
+        # 1) Check if the user is in a voice channel
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            await ctx.reply("You must be in a voice channel to use this command.", mention_author=False)
+            return (None, None)
 
-            # Send an embed message with the song info
-            embed = discord.Embed(
-                title=song_info['title'],
-                url=song_info['url'],
-                description=f"Queue Length: {len(music_queue[voice_channel_id])}",
-                color=0x8A3215,
-            )
-            embed.set_author(name="Added to Queue 🎶")
-            if thumbnail := song_info['thumbnail']:
-                embed.set_thumbnail(url=thumbnail)
-            await loading_message.edit(embed=embed)
-
-            # Cancel any existing timeout timer
-            await self.cancel_timeout_timer(voice_channel)
-
-            # If nothing is playing, start playing the next song in the queue
-            if not voice_client_dict[voice_channel_id].is_playing():
-                await self.play_next_in_queue(voice_channel, ctx.channel)
-
-        except Exception as e:
-            print(f"Error in play_music: {e}")
-            await ctx.reply(f"Failed to play the requested song. error {e}", mention_author=False)
-
-    async def _quickplay_music(self, ctx, url_or_query: str):
         voice_channel = ctx.author.voice.channel
         voice_channel_id = voice_channel.id
 
-        # Ensure the music queue is initialized for the voice channel
+        # 2) Initialize the queue for this channel if not present
         if voice_channel_id not in music_queue:
             music_queue[voice_channel_id] = []
 
-        try:
-            # Check if bot has necessary permissions in the channel
-            bot_permissions = ctx.channel.permissions_for(ctx.guild.me)
-            if not bot_permissions.send_messages or not bot_permissions.read_message_history:
-                await ctx.send("I need the **Send Messages** and **Read Message History** permissions to function properly.")
-                return
-
-            # Connect to the voice channel if not already connected
-            if voice_channel_id not in voice_client_dict or not voice_client_dict[voice_channel_id].is_connected():
+        # 3) Connect to the channel if the bot is not already connected
+        if (voice_channel_id not in voice_client_dict) or (not voice_client_dict[voice_channel_id].is_connected()):
+            try:
                 voice_client = await voice_channel.connect()
                 voice_client_dict[voice_channel_id] = voice_client
-            else:
-                voice_client = voice_client_dict[voice_channel_id]
+            except discord.ClientException:
+                voice_client = voice_client_dict.get(voice_channel_id)  # fallback
+            except Exception as e:
+                print(f"Error connecting to voice channel: {e}")
+                await ctx.reply("Failed to connect to the voice channel.", mention_author=False)
+                return (None, None)
+        else:
+            voice_client = voice_client_dict[voice_channel_id]
 
-            # Check if it's a URL or search query
-            if not url_or_query.startswith('http'):
-                # It's a search query
-                entries = await self.search_youtube(url_or_query)
+        return (voice_client, voice_channel_id)
 
-                if not entries:
-                    await ctx.reply("No results found.", mention_author=False)
-                    return
+    async def _play_music(self, ctx, url_or_query: str):
+        voice_client, voice_channel_id = await self._prepare_voice_client_and_queue(ctx)
+        if not voice_client:    # something failed or user canceled
+            return
 
-                selected_entry = await self.select_song(ctx=ctx, entries=entries, url_or_query=url_or_query)
-                if not selected_entry:
-                    # User canceled or invalid selection
-                    return
-            else:
-                # It's a direct URL
-                selected_entry = {'url': url_or_query}
+        request_result = await self._handle_song_request(ctx, url_or_query)
+        if not request_result:  # something failed or user canceled
+            return  
 
-            # -------------------- adding to queue loading ----------------------
-            loading_embed = discord.Embed(
-                title="Processing your request...",
-                description="Please wait while we retrieve the song information. 🎵",
-                color=0x8A3215,
-            )
-            loading_message = await ctx.reply(embed=loading_embed, mention_author=False)
-            
-            selected_url = selected_entry['url']
-            try:
-                song_info = await self.extract_song_info(selected_url)
-            except ValueError as e:
-                await loading_message.edit(embed=discord.Embed(
-                    title="Error",
-                    description=str(e),
-                    color=0xFF0000
-                ))
-                return
-            # song_info = await self.extract_song_info(selected_url)
-            song_info['requested_by'] = ctx.author
+        # Insert the returned track at the END of the queue
+        song_info = request_result['song_info']
+        loading_message = request_result['loading_message']
+        music_queue[voice_channel_id].append(song_info)
+        print(f"Added to queue in {ctx.author.voice.channel.name}: {song_info['title']}")
 
-            # Insert the quickplay song after the current song in the queue
-            music_queue[voice_channel_id].insert(1, song_info)
+        # Update loading_message embed
+        embed = discord.Embed(
+            title=song_info['title'],
+            url=song_info['url'],
+            description=f"Queue Length: {len(music_queue[voice_channel_id])}",
+            color=0x8A3215,
+        )
+        embed.set_author(name="Added to Queue 🎶")
+        if thumbnail := song_info['thumbnail']:
+            embed.set_thumbnail(url=thumbnail)
+        await loading_message.edit(embed=embed)
 
-            print(f"Quickplaying in {voice_channel.name}: {song_info['title']}")
+        # Cancel idle timer, then if nothing is playing, start
+        await self.cancel_timeout_timer(ctx.author.voice.channel)
+        if not voice_client_dict[voice_channel_id].is_playing():
+            await self.play_next_in_queue(ctx.author.voice.channel, ctx.channel)
 
-            # Send an embed message with the quickplay song info
-            embed = discord.Embed(
-                title=song_info['title'],
-                url=song_info['url'],
-                description=f"Queue Length: {len(music_queue[voice_channel_id])}",
-                color=0x8A3215,
-            )
-            embed.set_author(name="Quickplaying 🎵")
-            if thumbnail := song_info['thumbnail']:
-                embed.set_thumbnail(url=thumbnail)
-            await loading_message.edit(embed=embed)
+    async def _quickplay_music(self, ctx, url_or_query: str):
+        voice_client, voice_channel_id = await self._prepare_voice_client_and_queue(ctx)
+        if not voice_client:
+            return
 
-            # Cancel any existing timeout timer
-            await self.cancel_timeout_timer(voice_channel)
+        request_result = await self._handle_song_request(ctx, url_or_query)
+        if not request_result:
+            return
 
-            # Skip the current song (which will remove it from the queue)
-            await self._skip_music(ctx)
+        song_info = request_result['song_info']
+        loading_message = request_result['loading_message']
 
-        except Exception as e:
-            print(f"Error in quickplay_music: {e}")
-            await ctx.reply("Failed to quickplay the requested song.", mention_author=False)
+        # Insert the track at index 1 for a quickplay
+        music_queue[voice_channel_id].insert(1, song_info)
+        print(f"Quickplaying in {ctx.author.voice.channel.name}: {song_info['title']}")
+
+        # Update loading_message embed
+        embed = discord.Embed(
+            title=song_info['title'],
+            url=song_info['url'],
+            description=f"Queue Length: {len(music_queue[voice_channel_id])}",
+            color=0x8A3215,
+        )
+        embed.set_author(name="Quickplaying 🎵")
+        if thumbnail := song_info['thumbnail']:
+            embed.set_thumbnail(url=thumbnail)
+        await loading_message.edit(embed=embed)
+
+        # Cancel idle timer and skip the current track
+        await self.cancel_timeout_timer(ctx.author.voice.channel)
+        await self._skip_music(ctx)
 
     async def _skip_music(self, ctx: commands.Context | discord.Interaction, interaction=False):
         # Determine if the caller is a Context or an Interaction
@@ -819,7 +821,7 @@ class MusicCog(commands.Cog):
             # await ctx.send("An unexpected error occurred while searching YouTube.")
             return []
 
-    async def select_song(self, ctx, entries: list, url_or_query):
+    async def select_song(self, ctx, entries: list, url_or_query: str, loading_message:Message = None):
         # Generate the search results list
         search_result = [
             f"({idx+1}). **[{entry['title']}]({entry['url']})** • `{self.format_duration(entry['duration'])}`"
@@ -836,7 +838,11 @@ class MusicCog(commands.Cog):
         embed.set_footer(
             text=f"Please select the desired song by typing a number between 1 and {len(entries)}."
         )
-        await ctx.reply(embed=embed, mention_author=False)
+        
+        if loading_message:
+            await loading_message.edit(embed=embed)
+        else:
+            await ctx.reply(embed=embed, mention_author=False)
 
         # Wait for the user's response
         def check(m):
