@@ -360,9 +360,12 @@ class MusicCog(commands.Cog):
             embed.set_thumbnail(url=thumbnail)
         await loading_message.edit(embed=embed)
 
-        # Cancel idle timer and skip the current track
+        # Cancel idle timer and skip the current track if previous song exist
         await self.cancel_timeout_timer(ctx.author.voice.channel)
-        await self._skip_music(ctx)
+        if len(music_queue) == 1:
+            await self.play_next_in_queue(ctx.author.voice.channel, ctx.channel)
+        else:
+            await self._skip_music(ctx)
 
     async def _skip_music(self, ctx: commands.Context | discord.Interaction, interaction=False):
         # Determine if the caller is a Context or an Interaction
