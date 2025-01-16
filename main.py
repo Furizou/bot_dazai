@@ -28,7 +28,7 @@ def get_prefix(bot, message):
     if not message.guild:
         return '>'
     guild_id_str = str(message.guild.id)
-    return bot.prefixes_dict.get(guild_id_str, '<')
+    return bot.prefixes_dict.get(guild_id_str, '>')
 
 intents = discord.Intents.default()
 intents.message_content = True
