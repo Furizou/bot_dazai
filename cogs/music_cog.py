@@ -2,6 +2,8 @@ from typing import Final
 import discord
 from discord.ext import commands
 import asyncio
+from googletrans import Translator
+import lyricsgenius
 import yt_dlp
 from yt_dlp.utils import DownloadError
 from apps.ffmpeg_setup import voice_client_dict, ytdl, ffmpeg_options, music_queue, timeout_timers
@@ -113,6 +115,58 @@ class MusicControlView(View):
         # Call the show_queue method from MusicCog
         await self.music_cog._show_queue(interaction)
 
+class LyricsControlView(View):
+    """
+    A view containing buttons to control a lyrics embed.
+    Ensures only the user who invoked the lyrics command can use these buttons.
+    """
+
+    def __init__(self, requester_id: int, lyrics_message:discord.Message, lyrics_embed:discord.Embed, *, timeout=None):
+        super().__init__(timeout=timeout)
+        self.requester_id = requester_id
+        self.lyrics_message = lyrics_message
+        self.lyrics_embed = lyrics_embed
+        self.translator = Translator()
+        # self.current_page = 0
+        # self.total_pages = total_pages
+        # self.lyrics_chunks = list_of_lyrics_pages
+    
+    async def is_authorized(self, interaction: discord.Interaction) -> bool:
+        """Allow only the original requester to control the lyrics."""
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "You didn't request these lyrics, so you can't control them!",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    # 🈳
+    @discord.ui.button(label="Romanized", style=ButtonStyle.grey, emoji="🔡")
+    async def romanize_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self.is_authorized(interaction):
+            return
+        
+        # TODO: DEVELOP
+        await interaction.response.send_message(
+            f"feature is on development and isnt available right now 🙇‍♂️", ephemeral=True
+        )
+
+    @discord.ui.button(label="Close", style=ButtonStyle.red, emoji="❌")
+    async def close_button(self, interaction: discord.Interaction, button: Button):
+        """Closes the lyrics embed (removing or disabling the view)."""
+        if not await self.is_authorized(interaction):
+            return
+        
+        # Disable buttons and optionally remove the embed
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content="Lyrics closed.",
+            embed=None,
+            view=None
+        )
+
 class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot  # Gives access to the bot instance
@@ -130,6 +184,10 @@ class MusicCog(commands.Cog):
             )
         )
         # --- end of Spotify Setup ---
+        
+        # --- Genius Setup ---
+        self.GENIUS_ACCESS_TOKEN: Final[str] = os.getenv('GENIUS_ACCESS_TOKEN')
+        self.genius = lyricsgenius.Genius(self.GENIUS_ACCESS_TOKEN)
 
         if not self.YOUTUBE_API_KEY:
             print("YOUTUBE_API_KEY is not set. Please set the environment variable.")
@@ -169,6 +227,10 @@ class MusicCog(commands.Cog):
     @commands.command(name='stop', help="Stop music and disconnect from the VC.")
     async def stop_music(self, ctx):
         await self._stop_music(ctx)
+        
+    @commands.command(name='lyrics', help="Display the lyrics of the currently playing or specific song.")
+    async def lyrics_music(self, ctx, *, song_title: str = None):
+        await self._lyrics_music(ctx, song_title)
 
     # ---------------------- Helper Methods ----------------------
     async def _handle_song_request(self, ctx, url_or_query: str) -> dict | None:
@@ -903,3 +965,46 @@ class MusicCog(commands.Cog):
         """Convert seconds to MM:SS format."""
         minutes, seconds = divmod(int(seconds), 60)
         return f"{minutes}:{seconds:02d}"
+    
+    # TODO: add artist parameter, (search_song support this)
+    async def _lyrics_music(self, ctx, song_title = None):
+        try:
+            if not song_title:
+                voice = ctx.author.voice
+                queue = music_queue[voice.channel.id]
+                if (
+                    not voice 
+                    or not voice.channel 
+                    or len(queue) == 0
+                    ):                    
+                    return await ctx.reply("Please provide song title or add music to the queue.", mention_author=False)
+                song_title = queue[0]["title"]
+                
+            loading_embed = discord.Embed(
+                title="Processing your request...",
+                description="Please wait while we retrieve the song lyrics. 🎙️",
+                color=0x8A3215,
+            )
+            loading_message = await ctx.reply(embed=loading_embed, mention_author=False)
+            song = self.genius.search_song(title=song_title)
+
+            if not song:
+                await ctx.send("no song woi")
+                await loading_message.edit(content="No songs found")
+
+            lyrics_embed = discord.Embed(
+                title=song.title,
+                url=song.url,
+                color=0x8A3215
+            )
+            lyrics_embed.set_author(name="🎙️ Song Lyrics")
+            if thumbnail := song.song_art_image_thumbnail_url:
+                lyrics_embed.set_thumbnail(url=thumbnail)
+            lyrics_embed.description = song.lyrics
+            
+            view = LyricsControlView(requester_id=ctx.author.id, lyrics_message=loading_message, lyrics_embed=lyrics_embed)
+            await loading_message.edit(embed=lyrics_embed, view=view)
+            
+        except Exception as e:
+            await ctx.send(f"{e}")
+        return
