@@ -742,7 +742,8 @@ class MusicCog(commands.Cog):
                     self.handle_next_song(voice_channel, text_channel),
                     loop
                 )
-
+            
+            await asyncio.sleep(0.5)    # pre-loading lags
             voice_client.play(player, after=after_playing)
 
             # Create and attach the MusicControlView

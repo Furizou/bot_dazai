@@ -15,11 +15,16 @@ yt_dl_options = {
     'no_warnings': True,
     'default_search': 'auto',
     'source_address': '0.0.0.0',  # Bind to IPv4 since IPv6 addresses cause issues sometimes
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'opus',
+        'preferredquality': '192',
+    }],
 }
 ytdl = yt_dlp.YoutubeDL(yt_dl_options)
 voice_client_dict = {}
 ffmpeg_options = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2',
     'options': '-vn -af loudnorm=I=-16:TP=-1.5:LRA=11'
     
     # ---------------------------- Explanation --------------------------
