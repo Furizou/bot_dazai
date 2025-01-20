@@ -161,9 +161,14 @@ class LyricsControlView(View):
         # Disable buttons and optionally remove the embed
         for child in self.children:
             child.disabled = True
+            
+        lyrics_close_embed = discord.Embed(
+            title="🎙️ Song Lyrics",
+            description="lyrics is closed by the requester",
+            color=0x8A3215
+        )
         await interaction.response.edit_message(
-            content="Lyrics closed.",
-            embed=None,
+            embed=lyrics_close_embed,
             view=None
         )
 
@@ -806,6 +811,7 @@ class MusicCog(commands.Cog):
             del timeout_timers[voice_channel_id]
             print(f"Timeout canceled for {voice_channel.name} due to activity.")
 
+    # TODO: add the query with "lyrics" to avoid music video
     async def search_spotify(self, ctx, url: str):
         track_id = ''
         parts = url.split("/track/")
@@ -820,7 +826,7 @@ class MusicCog(commands.Cog):
         track_info = self.spotify.track(track_id)
         track_name = track_info['name']
         artists = ", ".join(artist['name'] for artist in track_info['artists'])
-        query = f"{artists} - {track_name}"
+        query = f"{artists} - {track_name} lyrics"
         
         # 4. Search youtube normally (TAKES THE FIRST ENTRY! TODO: UPDATE)
         youtube_entries = await self.search_youtube(query)
@@ -968,6 +974,7 @@ class MusicCog(commands.Cog):
     
     # TODO: add artist parameter, (search_song support this)
     async def _lyrics_music(self, ctx, song_title = None):
+        prefix = self.bot.prefixes_dict.get(str(ctx.guild.id), '>')
         try:
             if not song_title:
                 voice = ctx.author.voice
@@ -989,8 +996,12 @@ class MusicCog(commands.Cog):
             song = self.genius.search_song(title=song_title)
 
             if not song:
-                await ctx.send("no song woi")
-                await loading_message.edit(content="No songs found")
+                lyrics_not_found_embed = discord.Embed(
+                    title="❌ Song Lyrics not found",
+                    description=f"Try to manually search for a song lyrics with `{prefix}lyrics [query]` or use a clearer song title.",
+                    color=0x8A3215
+                )
+                return await loading_message.edit(embed=lyrics_not_found_embed)
 
             lyrics_embed = discord.Embed(
                 title=song.title,
@@ -1006,5 +1017,14 @@ class MusicCog(commands.Cog):
             await loading_message.edit(embed=lyrics_embed, view=view)
             
         except Exception as e:
-            await ctx.send(f"{e}")
+            lyrics_error_embed = discord.Embed(
+                title="❌ Song Lyrics error",
+                description=f"Lyrics query exited with error(s) below. Try to manually search for a song lyrics with `{prefix}lyrics [query]` or use a clearer song title.",
+                color=0x8A3215
+            )
+            lyrics_error_embed.add_field(
+                name="Error log:",
+                value=f"```{e}```"
+            )
+            await loading_message.edit(embed=lyrics_error_embed)
         return
